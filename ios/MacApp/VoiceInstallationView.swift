@@ -17,7 +17,7 @@ import SwiftUI
     private static var identifiers: Set<String> {
         Set(extensions(in: current).compactMap { Bundle(url: $0)?.bundleIdentifier })
     }
-    private static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    nonisolated private static let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
     nonisolated private static func run(_ path: String, _ arguments: [String]) -> String {
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: path); process.arguments = arguments
@@ -50,7 +50,8 @@ import SwiftUI
                 let matching = Self.extensions(in: app).filter { Bundle(url: $0)?.bundleIdentifier.map(ids.contains) == true }
                 found.append(Copy(app: app, extensions: matching))
             }
-            await MainActor.run { self.copies = found.sorted { $0.id < $1.id }; self.busy = false }
+            let sorted = found.sorted { $0.id < $1.id }
+            await MainActor.run { self.copies = sorted; self.busy = false }
         }
     }
     func remove(_ copy: Copy, quit: Bool = false, removeData: Bool = false) {
@@ -82,8 +83,9 @@ import SwiftUI
             }
             do { try FileManager.default.trashItem(at: copy.app, resultingItemURL: nil); result += " Moved the app to the Trash." }
             catch { result += " Move the app to the Trash manually: \(error.localizedDescription)" }
+            let message = result
             await MainActor.run {
-                self.busy = false; self.report = result
+                self.busy = false; self.report = message
                 if quit {
                     if removeData, let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
                     NSApp.terminate(nil)

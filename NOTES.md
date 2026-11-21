@@ -2868,3 +2868,11 @@ manual accessibility checks, and all complex rich-SSML phrasing differences.
 The external Panthera cross-platform packing wizard has not been transplanted;
 its native ABI differs. The new local Xcode packaging tool is not a Windows
 replacement for that wizard. No release is implied by this source checkpoint.
+
+
+Packaging follow-up: strip debug/local linker symbols before signing so local
+home-directory source/object paths are absent from distributable executables.
+Preserve exported AU/native ABI symbols and runtime metadata. Use the canonical
+ios/ project location for Mac packaging, since its FastCode source script uses
+SRCROOT-relative paths; the data-free iOS build spec remains isolated. The iOS
+extension ID is a child of the containing app ID, as installation requires.

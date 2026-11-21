@@ -78,14 +78,23 @@ def main():
             if key in ('path','INFOPLIST_FILE','SWIFT_OBJC_BRIDGING_HEADER') and not value.startswith('$'): return str((ROOT/'ios'/value).resolve())
             if key in ('HEADER_SEARCH_PATHS','LIBRARY_SEARCH_PATHS'): return value.replace('$(SRCROOT)/../',str(ROOT)+'/').replace('$(SRCROOT)',str(ROOT/'ios'))
         return value
-    directory = ROOT / 'build' / ('port-'+args.platform+'-project')
-    directory.mkdir(parents=True,exist_ok=True)
-    config = directory/'project.json';config.write_text(json.dumps(fix(spec),indent=2))
-    derived = ROOT/'build'/('port-'+args.platform+'-derived')
+    if args.platform == 'mac':
+        # Mac postbuild scripts package compiler sources relative to ios/.
+        # Keep the canonical project location instead of moving SRCROOT.
+        directory = ROOT/'ios'
+        config = directory/'project.yml'
+        derived = ROOT/'build/mac-derived'
+        project = directory/'ClassicVoices.xcodeproj'
+    else:
+        directory = ROOT/'build/port-ios-project'
+        directory.mkdir(parents=True,exist_ok=True)
+        config = directory/'project.json';config.write_text(json.dumps(fix(spec),indent=2))
+        derived = ROOT/'build/port-ios-derived'
+        project = directory/'ClassicVoicesPortBuild.xcodeproj'
     scheme = 'ClassicVoicesMacPublic' if args.platform=='mac' else 'ClassicVoices'
     if not args.skip_build:
         run(['xcodegen','generate','-q','--spec',config,'--project',directory])
-        run(['xcodebuild','-project',directory/'ClassicVoicesPortBuild.xcodeproj','-scheme',scheme,
+        run(['xcodebuild','-project',project,'-scheme',scheme,
              '-configuration','Release','-destination','generic/platform='+('macOS' if args.platform=='mac' else 'iOS'),
              '-derivedDataPath',derived,'-jobs','6','ARCHS=arm64','ONLY_ACTIVE_ARCH=YES',
              'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','build'])
@@ -105,6 +114,14 @@ def main():
         settings['logSpokenText']=False
         (voices/'settings.json').write_text(json.dumps(settings))
     for bundle in [extension,app]: configure_bundle(bundle,args.platform,bundle==extension)
+    # Release build products still contain linker debug/local symbol paths.
+    # Strip those from our executables before signing; runtime metadata and
+    # exported AU/native ABI symbols remain available.
+    for bundle in [extension, app]:
+        info_path=bundle/('Contents/Info.plist' if args.platform=='mac' else 'Info.plist')
+        executable=plistlib.loads(info_path.read_bytes())['CFBundleExecutable']
+        binary=bundle/('Contents/MacOS' if args.platform=='mac' else '')/executable
+        run(['xcrun','strip','-S','-x',binary])
     # Do not carry a provisioning profile or an old signature into a local IPA.
     for path in list(app.rglob('embedded.mobileprovision')) + list(app.rglob('embedded.provisionprofile')):
         path.unlink()
