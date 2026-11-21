@@ -10,6 +10,29 @@ import Foundation
         var settings = SpeechSettings()
         require(settings.macinTalkCompatibility && !settings.logSpokenText, "safe compatibility defaults")
         require(settings.macinTalkSettings(.snowleopard).inflection == 100, "VoiceOver inflection")
+        // Headings become words, while abbreviations, Roman numerals and
+        // literal spelling keep their distinct meanings on every generation.
+        for generation in Generation.allCases {
+            var profile = PantheraSettings()
+            require(SpeechText.prepare("FACETIME SETTINGS JANESMITH4 HTTPS MCMXCIV", settings: profile, generation: generation, spelling: false)
+                .contains("Facetime Settings Janesmith 4 HTTPS MCMXCIV"), "expanded capitalization and exceptions")
+            profile.capitalsAsWords = false
+            require(SpeechText.prepare("FACETIME", settings: profile, generation: generation, spelling: false) == "FACETIME", "capitalization control off")
+        }
+        for value in ["1e308", "NaN", "Infinity", "-1e308", "1e308%"] {
+            let xml = "<speak><mark name='start'/><prosody rate='\(value)' volume='\(value)' pitch='\(value)'>window<break time='\(value)s'/></prosody></speak>"
+            for voice in ["mt106/Alex", "ios6/en-US"] {
+                let bounded = SpeechJob.from(ssml: xml, voiceKey: voice, settings: settings)
+                require((0...10_000).contains(bounded.rate) && (0...60_000).contains(bounded.trailingPauseMs), "extreme rich SSML is bounded")
+            }
+        }
+        let repeatedPitch = String(repeating: "<prosody pitch='10000'>", count: 12) + "window" + String(repeating: "</prosody>", count: 12)
+        require(SpeechJob.from(ssml: "<speak><mark name='x'/>\(repeatedPitch)</speak>", voiceKey: "ios6/en-US", settings: settings).pitch <= 1_000_000, "nested pitch cannot overflow")
+        require(SpeechText.expandDates("SAT OCT 23") == "Saturday October 23", "uppercase Saturday expands with other date headings")
+        let quietRich = SpeechJob.from(ssml: "<speak><prosody volume='-6dB'><mark name='x'/>window</prosody></speak>", voiceKey: "mt106/Alex", settings: settings)
+        require(abs(quietRich.macinTalkGain - 0.5) < 0.02, "rich SSML dB volume reaches MacinTalk output gain")
+        let quietVocalizer = SpeechJob.from(ssml: "<speak><prosody volume='-6dB'>window</prosody></speak>", voiceKey: "ios6/en-US", settings: settings)
+        require(quietVocalizer.volume == 40, "Vocalizer dB volume is honored")
         let key = "mt106/Alex"
         func prepare(_ text: String) -> String { MacinTalkCompatibility.prepare(text, voiceKey: key, settings: settings) }
         require(prepare("Read 10:38 PM") == "Red 10:38 PM", "receipt")

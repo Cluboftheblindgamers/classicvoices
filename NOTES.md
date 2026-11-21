@@ -2804,3 +2804,67 @@ The test provider is not advertising the full download catalog. macOS combines
 registered providers; retain original registration during fallback testing.
 Before release, revisit duplicate-copy diagnostics and migration/uninstall UX.
 No app registration or selected system voice was changed during this inspection.
+
+
+## 2026-11-21 — Complete application-feature audit and integration fixes
+
+Compared the maintained Panthera Apple shared sources and generation UI with
+this port. All 15 stored generation controls have corresponding port controls.
+SpeechText, MacRoman and scoped Pronunciations retain the maintained source,
+with attribution; the one text-rule fix is uppercase SAT date expansion, which
+was omitted from the original day-name expression. Capitalization covers
+headings/usernames while preserving abbreviations, Roman numerals and literal
+spelling. `tools/audit_panthera_source.py` records source hashes/diffs and checks
+stored-control coverage without publishing an owner's source path or settings.
+
+Fixed application integration defects:
+- Engine discovery accepts any supported MT/iOS engine, plus imported engine
+  stores on iOS; iOS 6 no longer has to be bundled for MT to work.
+- Nested voice installation/removal invalidates the bundled/imported catalog,
+  avoiding stale installed voices. Private system voice labels identify the
+  Panthera port; Siri downloads use the configured identity consistently.
+- Small settings files publish atomically, preserving legacy group symlinks.
+  Readers notice same-date/same-size replacements and changes behind symlinks,
+  keep last valid settings for corrupt files, and use logging-disabled packed
+  settings only when no user override exists.
+- Persistent embedded-command mode bypasses the phrase cache so audio replay
+  cannot skip a command's effect on the engine's state.
+- The richer inherited SSML parser clamps nonfinite/overflowing rate, volume,
+  pitch and pauses; nested pitch and trailing pause accumulation stay bounded.
+  dB volume is honored in rich requests and Vocalizer; MT keys select the proper
+  pitch semantics without relying on a caller flag.
+- MT import diagnostics use the same serialized MT producer as preview/speech,
+  rather than opening a competing MacinTalk engine on the Vocalizer stream.
+- The render timeout uses uptime nanoseconds instead of assuming a hardware
+  timer frequency. Stall monitoring reports stage/footprint without speech text,
+  updates on active audio delivery and schedules no periodic idle wakeups.
+- Added Mac installation management (Settings > Voice installations). It only
+  targets exact extension IDs from the current app, so the isolated port cannot
+  remove stable Panthera. Uninstall choices retain or trash named imported data
+  folders; OS container roots are never deleted. These destructive UI actions
+  were not exercised during automated validation.
+
+Added local package tools:
+- `tools/build_mt_libraries.py`: compile locally generated Mac MT native libs.
+- `tools/package_panthera_apple.py`: isolated arm64 Mac app or ad-hoc iOS IPA;
+  accepts local data/native libraries and optional packed settings. Uses no
+  personal development team or provisioning profile and never uploads output.
+  iOS packaging requires local generated code and supplied voice data; it is
+  distinct from the earlier compile-only checker.
+
+Regression additions cover capitalization across four generations, uppercase
+Saturday, extreme rich SSML, dB volume, installed-voice catalog changes, atomic
+settings, corrupt/replaced settings, legacy symlink updates and persistent
+command cache bypass. A separate optional `--stress` runs 1,000 uncached native
+Snow Leopard Alex requests: all completed; footprint rose from 20,120,320 bytes
+at request 200 to 20,628,272 at 1,000 (507,952 bytes growth, about 0.48 MiB).
+This is a local direct-provider test, not device lock-screen or VoiceOver UI
+acceptance. The prior 139-second reading/cancellation/error-recovery checks
+remain part of the suite.
+
+Remaining acceptance still includes real iOS installation/sideloading, lock-
+screen and Mac sleep recovery, live Vocalizer and generation/settings coverage,
+manual accessibility checks, and all complex rich-SSML phrasing differences.
+The external Panthera cross-platform packing wizard has not been transplanted;
+its native ABI differs. The new local Xcode packaging tool is not a Windows
+replacement for that wizard. No release is implied by this source checkpoint.

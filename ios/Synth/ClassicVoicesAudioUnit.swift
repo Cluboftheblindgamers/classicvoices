@@ -146,12 +146,12 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                 // hand back is queued ahead of the voice. Wait (briefly) for real
                 // samples instead of padding: fill the whole request unless the
                 // utterance has ended.
-                let deadline = mach_absolute_time() + 500_000_000 / 41  // ~500 ms (24 MHz timebase ≈ 41.67 ns/tick)
+                let deadline = DispatchTime.now().uptimeNanoseconds + 500_000_000
                 while true {
                     var d: Int32 = 0
                     n += vxs_read(stream, out + n, frames - n, &d)
                     done = d
-                    if n == frames || d != 0 || mach_absolute_time() > deadline { break }
+                    if n == frames || d != 0 || DispatchTime.now().uptimeNanoseconds > deadline { break }
                     usleep(500)
                 }
             }

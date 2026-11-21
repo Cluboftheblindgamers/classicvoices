@@ -88,19 +88,41 @@ struct SpeechSettings: Codable, Equatable, Sendable {
     // MARK: - the extension's copy
 
     nonisolated(unsafe) private static var cached = SpeechSettings()
-    nonisolated(unsafe) private static var cachedDate: Date?
+    private struct FileStamp: Equatable {
+        var date: Date?
+        var size: UInt64?
+        var inode: UInt64?
+    }
+    nonisolated(unsafe) private static var cachedStamp: FileStamp?
     private static let lock = NSLock()
 
     /// Settings as stored in this process's voice root (the extension's
     /// store, or the App Group for a process without one), re-read when the
     /// file changes.
     static var current: SpeechSettings {
-        guard let url = VoiceCatalog.enhancedRoot?.appendingPathComponent(file) else { return cached }
         lock.lock(); defer { lock.unlock() }
-        let date = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
-        if date != cachedDate {
-            cachedDate = date
-            cached = (try? Data(contentsOf: url)).flatMap(decode) ?? SpeechSettings()
+        guard let url = VoiceCatalog.enhancedRoot?.appendingPathComponent(file) else { return cached }
+        let resolved = url.resolvingSymlinksInPath()
+        let attributes = try? FileManager.default.attributesOfItem(atPath: resolved.path)
+        let stamp = FileStamp(date: attributes?[.modificationDate] as? Date,
+                              size: (attributes?[.size] as? NSNumber)?.uint64Value,
+                              inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value)
+        if stamp != cachedStamp {
+            if let data = try? Data(contentsOf: resolved), let decoded = decode(data) {
+                cached = decoded
+                cachedStamp = stamp
+            } else if attributes == nil {
+                // A local packed install can supply defaults with its voice
+                // data. User changes in the extension store take precedence.
+                if let root = VoiceCatalog.root, root.standardizedFileURL != url.deletingLastPathComponent().standardizedFileURL,
+                   let data = try? Data(contentsOf: root.appendingPathComponent(file)), let packed = decode(data) {
+                    cached = packed
+                    cached.logSpokenText = false
+                } else { cached = SpeechSettings() }
+                cachedStamp = stamp
+            }
+            // Keep the last valid settings if a damaged or unreadable file
+            // is encountered, and retry it on the next request.
         }
         return cached
     }

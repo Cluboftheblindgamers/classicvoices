@@ -1,3 +1,12 @@
+> **Panthera compatibility branch:** This fork ports the maintained Panthera
+> Mac/iOS speech settings, text rules, scoped pronunciations and streaming
+> behavior onto Classic Voices. See [PANTHERA-PARITY.json](PANTHERA-PARITY.json)
+> and the dated entries in [NOTES.md](NOTES.md) for validation and remaining
+> release checks. The local Apple build tools create private test packages;
+> they do not publish Apple engine data or translated code. Stable Panthera
+> remains a separate fallback during migration. Upstream automatic updates
+> are disabled on this branch.
+
 # Classic Voices
 
 Have you ever wished you could use Samantha from iOS 6, or take a trip back in time to hear the voices VoiceOver originally had? Have you ever wished you could have Mac exclusive voices that never made it to the iPhone, like Jill, Emily and more, on modern devices? Classic Voices allows you to do this and more.

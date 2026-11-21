@@ -23,7 +23,7 @@ final class SiriDownloads {
         var folder: String { compact ? name + "Compact" : name }
         var id: String { "\(VoiceCatalog.siri.build)/\(folder)" }
         /// The identifier the system sees once it's here (VoiceCatalog.Entry.identifier).
-        var identifier: String { "com.levigobin.ClassicVoices.\(VoiceCatalog.siri.build).\(folder)" }
+        var identifier: String { "\(BuildIdentity.voicePrefix).\(VoiceCatalog.siri.build).\(folder)" }
     }
 
     private struct File: Codable { let voices: [Voice] }

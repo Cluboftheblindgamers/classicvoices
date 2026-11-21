@@ -1,11 +1,8 @@
 // Adapted from Panthera Speech. See third_party/panthera/LICENSE.
 import Foundation
 
-/// One Mac OS X speech engine generation. Each one is its own speech
-/// extension -- its own process -- because the host maps one generation per
-/// process and has no unload path (src/tiger_host_jni.h). That is the same
-/// shape NVDA ("one synthesizer per generation") and Android ("one private
-/// worker per generation") already settled on.
+/// One Mac OS X speech generation. Classic maps these profiles to mt104..mt107
+/// and serializes MacinTalk requests through its shared engine producer.
 public enum Generation: String, CaseIterable, Codable, Identifiable, Sendable {
     case tiger
     case leopard

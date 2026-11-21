@@ -50,13 +50,15 @@ final class MacinTalkProvider: @unchecked Sendable {
 
     func submit(_ job: SpeechJob, voiceKey: String, settings: SpeechSettings) {
         let start = Self.now()
+        EngineWatch.requestArrived()
         supersedeOtherRequests()
         let token = pcm.begin()
         metricsLock.lock(); currentMetrics = Metrics(token: token); metricsLock.unlock()
         markerLock.lock(); markerToken = token; markers = []; markerLock.unlock()
         let cache = PhraseCache.shared
         let key = Self.cacheKey(job, voiceKey: voiceKey, settings: settings)
-        if job.markNames.isEmpty, let samples = cache.get(key) {
+        let cacheable = Self.canCache(job, voiceKey: voiceKey, settings: settings)
+        if cacheable, let samples = cache.get(key) {
             Self.cacheQueue.async { [self] in
                 defer { pcm.finish(token); record(token, start: start, complete: true, cached: true) }
                 samples.withUnsafeBufferPointer { samples in
@@ -73,7 +75,8 @@ final class MacinTalkProvider: @unchecked Sendable {
         }
         Self.queue.async { [self] in
             guard pcm.isCurrent(token) else { return }
-            defer { pcm.finish(token) }
+            EngineWatch.enter("MacinTalk request")
+            defer { pcm.finish(token); EngineWatch.idle() }
             let engine = Self.engine
             guard let stream = engine.stream else { return }
             engine.speak(job, voiceKey: voiceKey,
@@ -81,7 +84,7 @@ final class MacinTalkProvider: @unchecked Sendable {
                          twentyFourHour: settings.twentyFourHour, modernRate: settings.modernRate,
                          settings: settings)
             var audio = [Float](repeating: 0, count: 4096)
-            var collected: [Float]? = job.markNames.isEmpty ? [] : nil
+            var collected: [Float]? = cacheable ? [] : nil
             while pcm.isCurrent(token) {
                 var done: Int32 = 0
                 let count = audio.withUnsafeMutableBufferPointer { vxs_read(stream, $0.baseAddress, $0.count, &done) }
@@ -99,6 +102,7 @@ final class MacinTalkProvider: @unchecked Sendable {
                         if collected!.count + count <= cache.longest { collected!.append(contentsOf: audio[..<count]) }
                         else { collected = nil }
                     }
+                    EngineWatch.enter("MacinTalk audio delivery")
                     let accepted = audio.withUnsafeBufferPointer { pcm.write($0.baseAddress!, count: count, token: token) }
                     if !accepted { break }
                     audio.withUnsafeBufferPointer { record(token, start: start, samples: UnsafeBufferPointer(rebasing: $0[..<count])) }
@@ -128,6 +132,17 @@ final class MacinTalkProvider: @unchecked Sendable {
     func takeMarkers() -> [(id: Int, frame: Int)] {
         markerLock.lock(); defer { markerLock.unlock() }
         let out = markers; markers = []; return out
+    }
+
+    static func canCache(_ job: SpeechJob, voiceKey: String, settings: SpeechSettings) -> Bool {
+        guard job.markNames.isEmpty else { return false }
+        // Persistent embedded commands make future audio depend on engine
+        // history. Replaying cached PCM would skip those state changes.
+        if settings.macinTalkCompatibility, let generation = MacinTalkCompatibility.generation(for: voiceKey) {
+            let profile = settings.macinTalkSettings(generation)
+            if profile.acceptCommands && !profile.resetCommands { return false }
+        } else if !settings.resetCommands { return false }
+        return true
     }
 
     static func cacheKey(_ job: SpeechJob, voiceKey: String, settings: SpeechSettings) -> String {

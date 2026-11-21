@@ -1,6 +1,6 @@
 {
   "baseline": "6e1e68b411eb0d3322a2124bddca3c7ee3302703",
-  "status": "initial Mac/iOS implementation; automated checks passed; manual and release gates pending",
+  "status": "application-feature audit complete; local native Apple builds in progress; device/manual release gates remain",
   "sourceReference": "Panthera Speech Apple port, local maintained baseline 2026-11-21",
   "features": [
     {
@@ -21,8 +21,8 @@
       "id": "pronunciation-text",
       "behavior": "Receipt read/red, minute, compact durations, symbols, dates, abbreviations, capitals, emoji and script fallback",
       "verified": false,
-      "implementation": "ported",
-      "validation": "46 integration checks and original text/SSML corpus pass"
+      "implementation": "ported and audited",
+      "validation": "Maintained source comparison, 15 stored-control coverage, four-generation capitalization and uppercase Saturday regressions; 68 integration checks"
     },
     {
       "id": "identifier-latency",
@@ -42,8 +42,8 @@
       "id": "generation-settings",
       "behavior": "Volume, fixed rate, boost, inflection, number reading, engine phrasing, abbreviation expansion, command acceptance/reset, date and capitals, pauses and quick interruption",
       "verified": false,
-      "implementation": "ported",
-      "validation": "text/number/settings tests, real four-generation C renders and Mac system-hosted fixed-rate change pass; full per-voice matrix pending"
+      "implementation": "all 15 controls ported",
+      "validation": "Original stored/control coverage plus settings import/export and real speech tests; full device/per-voice matrix remains"
     },
     {
       "id": "scoped-pronunciations",
@@ -70,15 +70,15 @@
       "id": "short-phrase-cache",
       "behavior": "Bounded audio caching and cancellation-safe cached playback",
       "verified": false,
-      "implementation": "ported",
-      "validation": "budget/LRU/stale writer tests and real-engine cached-during-cancellation test pass"
+      "implementation": "ported and hardened",
+      "validation": "Persistent-command mode bypasses cache; budget, LRU, supersession and real native cancellation/cache tests pass"
     },
     {
       "id": "long-reading",
       "behavior": "Bounded rolling audio memory and uninterrupted multi-sentence reading",
       "verified": false,
-      "implementation": "bounded provider ported",
-      "validation": "real native provider completed 139 seconds of audio; queue budget tests pass"
+      "implementation": "bounded provider and stress verified locally",
+      "validation": "139-second reading complete; 1000 uncached utterances completed with 507952-byte growth from request200 to1000"
     },
     {
       "id": "interruption-recovery",
@@ -91,8 +91,8 @@
       "id": "idle-recovery",
       "behavior": "Wall-clock changes, sleep/wake, background and lock-screen stability",
       "verified": false,
-      "implementation": "pending",
-      "validation": "Mac sleep/wake and iOS background/lock-screen 12-minute recovery must be repeated"
+      "implementation": "monotonic guest clocks retained; stall watcher ported",
+      "validation": "Inherited clock shim audited; monotonic hardware-render timeout; idle watcher has no periodic wakeups. Real Mac sleep/iOS lock recovery pending"
     },
     {
       "id": "accessibility",
@@ -105,29 +105,29 @@
       "id": "sideload-settings",
       "behavior": "Voice settings transfer without an app group, clear status if unavailable",
       "verified": false,
-      "implementation": "retained file channel",
-      "validation": "real Mac extension write/read/restore and system-hosted rate update pass; iOS without app group pending"
+      "implementation": "file channel retained and hardened",
+      "validation": "Atomic settings and symlinks tested, live Mac rate change verified previously; actual iOS no-group sideload acceptance pending"
     },
     {
       "id": "diagnostics-privacy",
       "behavior": "Opt-in spoken-text logging, timing without private text by default",
       "verified": false,
-      "implementation": "ported",
-      "validation": "spoken text requires opt-in; settings imports force logging off; technical logs retain timing without text"
+      "implementation": "ported including stall stage/footprint",
+      "validation": "Opt-in spoken text, import and packed defaults force logging off; MT import test uses shared producer; generic logs omit speech text"
     },
     {
       "id": "voice-registration",
       "behavior": "Stable Classic voice IDs, duplicate-copy diagnostics and safe uninstall",
       "verified": false,
-      "implementation": "private trial verified; cleanup work pending",
-      "validation": "macOS registered two isolated voices and rendered Alex; normal IDs unchanged by default; duplicate-copy/uninstall diagnostics pending; investigated crowded macOS chooser: private trial advertises only Alex/Fred; 96 entries belong to original Panthera and one to earlier Classic copy"
+      "implementation": "installed catalog refresh, isolated labels and Mac management ported",
+      "validation": "Nested installs/removal regression passes; private labels identify port; cleanup targets exact extension IDs. Destructive UI acceptance remains untested"
     },
     {
       "id": "packer",
       "behavior": "Accessible self-contained Mac/Windows packing UI and packed settings",
       "verified": false,
-      "implementation": "pending",
-      "validation": "Panthera Mac/Windows packing wizard and packed settings must be adapted to Classic ABI/layout"
+      "implementation": "local Mac/Xcode app and IPA packaging added; external wizard pending",
+      "validation": "Locally generated MT libraries and data packing, optional packed settings, isolated identities and ad-hoc signing. Cross-platform Panthera wizard/Windows native ABI migration remains separate"
     },
     {
       "id": "platforms",
@@ -139,5 +139,6 @@
   ],
   "validationDate": "2026-11-21",
   "validationScope": "Apple Silicon Mac; iOS compile-only; local Snow Leopard native code; other MacinTalk generations interpreted render checks",
-  "verifiedMeaning": "True requires complete feature acceptance; passing partial checks is recorded under validation, not full parity."
+  "verifiedMeaning": "True requires complete feature acceptance; passing partial checks is recorded under validation, not full parity.",
+  "externalUtilities": "The original cross-platform Panthera packing wizard remains a separate migration item; local Xcode packaging is available."
 }

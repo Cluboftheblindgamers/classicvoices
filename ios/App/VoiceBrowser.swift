@@ -1061,6 +1061,9 @@ struct SettingsTab: View {
 struct SpeechSettingsView: View {
     @Environment(VoiceLibrary.self) private var library
     @State private var showingMacinTalk = false
+    #if os(macOS)
+    @State private var showingInstallations = false
+    #endif
     @AccessibilityFocusState private var macinTalkFocus: Bool
     #if CV_PUBLIC
     @AppStorage("update.automatic") private var updateAutomatically = true
@@ -1180,6 +1183,10 @@ struct SpeechSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        #if os(macOS)
+        .toolbar { Button("Voice installations…") { showingInstallations = true } }
+        .sheet(isPresented: $showingInstallations) { VoiceInstallationView() }
+        #endif
         .sheet(isPresented: $showingMacinTalk, onDismiss: { macinTalkFocus = true }) { MacinTalkSettingsView() }
     }
 }

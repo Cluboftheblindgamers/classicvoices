@@ -79,7 +79,7 @@ public enum SpeechText {
         "jan": "January", "feb": "February", "mar": "March", "apr": "April", "jun": "June",
         "jul": "July", "aug": "August", "sep": "September", "sept": "September", "oct": "October",
         "nov": "November", "dec": "December"]
-    private static let dayAlt = #"Mon|Tues?|Wed|Thu(?:rs?)?|Fri|Sat|Sun|MON|TUES?|WED|THU(?:RS?)?|FRI|SUN"#
+    private static let dayAlt = #"Mon|Tues?|Wed|Thu(?:rs?)?|Fri|Sat|Sun|MON|TUES?|WED|THU(?:RS?)?|FRI|SAT|SUN"#
     private static let monthAlt = #"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec|JAN|FEB|MAR|APR|JUN|JUL|AUG|SEPT?|OCT|NOV|DEC"#
     private static let monthFull = #"January|February|March|April|May|June|July|August|September|October|November|December"#
     private static let dayBeforeDate = re(#"\b("# + dayAlt + #")\.?(?=,?\s+(?:\d|(?:"# + monthAlt + "|" + monthFull + #")\b))"#)

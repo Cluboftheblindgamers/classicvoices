@@ -16,6 +16,7 @@ def run(command,**kwargs):subprocess.run([str(x) for x in command],check=True,cw
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--voice-root',type=Path)
+    parser.add_argument('--stress',action='store_true',help='run 1000 uncached native-provider utterances')
     parser.add_argument('--native-objects',type=Path)
     args=parser.parse_args()
     build=ROOT/'build/tests';build.mkdir(parents=True,exist_ok=True)
@@ -33,15 +34,16 @@ def main():
         '-framework','NaturalLanguage','-Xlinker','-install_name','-Xlinker','@rpath/libClassicPortTest.dylib',
         '-o',build/'libClassicPortTest.dylib']
     with (build/'module-build.log').open('w') as log:run(module,stdout=log,stderr=subprocess.STDOUT)
-    checks=['panthera_maintenance','panthera_port','panthera_queue','panthera_scopes']
+    checks=['panthera_maintenance','panthera_port','panthera_queue','panthera_scopes','panthera_storage']
     if args.voice_root:checks.append('panthera_provider')
+    if args.stress and args.voice_root:checks.append('panthera_stress')
     for name in checks:
         command=common+['-parse-as-library','-I',build,ROOT/'tests'/(name+'.swift'),'-L',build,
             '-lClassicPortTest','-Xlinker','-rpath','-Xlinker','@executable_path','-o',build/name]
         with (build/(name+'-build.log')).open('w') as log:run(command,stdout=log,stderr=subprocess.STDOUT)
         env=dict(os.environ)
         if args.voice_root:env['CV_PORT_ROOT']=str(args.voice_root.resolve())
-        with (build/(name+'.log')).open('w') as log:run([build/name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=90)
+        with (build/(name+'.log')).open('w') as log:run([build/name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=240 if name=='panthera_stress' else 90)
         print((build/(name+'.log')).read_text().strip(),flush=True)
     run(['clang','-O2','-Icore','-Icore/mt','tests/mt_port_render.c','-Lbuild/tests',
          '-lClassicPortTest','-Wl,-rpath,@executable_path','-o',build/'mt_port_render'])

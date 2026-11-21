@@ -48,7 +48,7 @@ enum Diagnostics {
         }
 
         // What the system lists, as VoiceOver sees it.
-        let ours = AVSpeechSynthesisVoice.speechVoices().filter { $0.identifier.contains("com.levigobin.ClassicVoices") }
+        let ours = AVSpeechSynthesisVoice.speechVoices().filter { $0.identifier.contains(BuildIdentity.voicePrefix) }
         out.append("System voices from Classic Voices: \(ours.count) of \(VoiceCatalog.providerVoices.count)")
 
         let downloaded = VoiceCatalog.enhanced.map(\.key).sorted()

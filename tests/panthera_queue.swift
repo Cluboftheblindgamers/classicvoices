@@ -62,6 +62,14 @@ private final class ResultBox: @unchecked Sendable { var accepted = true }
         precondition(a != MacinTalkProvider.cacheKey(job, voiceKey: "mt106/Alex", settings: settings))
         job.macinTalkGain = 1; job.macinTalkPitchTenths = 1
         precondition(a != MacinTalkProvider.cacheKey(job, voiceKey: "mt106/Alex", settings: settings))
+        settings = SpeechSettings()
+        profile = PantheraSettings(); profile.acceptCommands = true; profile.resetCommands = false
+        settings.macinTalk["snowleopard"] = profile
+        precondition(!MacinTalkProvider.canCache(job, voiceKey: "mt106/Alex", settings: settings))
+        profile.resetCommands = true; settings.macinTalk["snowleopard"] = profile
+        precondition(MacinTalkProvider.canCache(job, voiceKey: "mt106/Alex", settings: settings))
+        job.markNames = ["position"]
+        precondition(!MacinTalkProvider.canCache(job, voiceKey: "mt106/Alex", settings: settings))
         print("PASS cache budgets, eviction, stale writes/completion, cancellation, cross-unit supersession and settings-sensitive cache keys")
     }
 }

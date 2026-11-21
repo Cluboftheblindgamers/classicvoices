@@ -14,7 +14,7 @@ let appGroup = BuildIdentity.value("ClassicVoicesAppGroup") ?? "7WV49AN2BX.com.l
 /// provisioning profile they embed, so read that too. The extension looks at
 /// the containing app as well.
 let appGroup: String = {
-    let fallback = "group.com.levigobin.ClassicVoices"
+    let fallback = BuildIdentity.value("ClassicVoicesAppGroup") ?? "group.com.levigobin.ClassicVoices"
     var bundles = [Bundle.main.bundleURL]
     if Bundle.main.bundleURL.pathExtension == "appex" {  // X.app/PlugIns/Synth.appex
         bundles.append(Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent())
@@ -76,6 +76,9 @@ enum VoiceCatalog {
             return "\(BuildIdentity.voicePrefix).\(tag).\(language)"
         }
         var displayName: String {
+            baseDisplayName + (BuildIdentity.isTestCopy ? " — Panthera port" : "")
+        }
+        private var baseDisplayName: String {
             if macinTalk { return "\(name) (\(buildName))" }
             if build == VoiceCatalog.siri.build { return "\(name) (\(buildName)\(enhanced ? " Enhanced" : ""))" }
             if macDir != nil { return "\(name) (\(buildName) \(premium ? "Premium" : "Compact"))" }
@@ -208,8 +211,7 @@ enum VoiceCatalog {
         ]
         for base in candidates.compactMap({ $0 }) {
             let dir = base.appendingPathComponent("Voices")
-            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("ios6/voiced").path)
-                || (BuildIdentity.isTestCopy && FileManager.default.fileExists(atPath: dir.appendingPathComponent("mt106/MacinTalk").path)) {
+            if containsEngineData(in: dir) {
                 return dir
             }
         }
@@ -221,8 +223,18 @@ enum VoiceCatalog {
             return dir
         }
         #endif
-        return nil
+        // A data-free iOS app can import engines into the extension's own
+        // store. It must not depend on an iOS 6 engine being bundled.
+        return extensionStore ?? legacyGroupRoot
     }()
+
+    static func containsEngineData(in directory: URL) -> Bool {
+        let fm = FileManager.default
+        return (builds.map { "\($0.0)/voiced" } + ["ios7/voiced", "ios10/voiced"]
+            + macinTalkEras.map { "\($0.0)/MacinTalk" }).contains {
+                fm.fileExists(atPath: directory.appendingPathComponent($0).path)
+            }
+    }
 
     #if os(macOS)
     /// The released Mac app's engines and voices, as the app imported them:
@@ -379,15 +391,15 @@ enum VoiceCatalog {
         // Imported engines arrive while the extension runs, and every process
         // of it (the system's, the app's) has to notice: an engine is moved
         // into the root when it's complete, which changes the root's date.
-        let stamp = root.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0.path))?[.modificationDate] as? Date }
+        let stamp = root.map { folderStamps($0) } ?? []
         scanLock.lock()
         if let builtInScan, builtInScan.stamp == stamp { scanLock.unlock(); return builtInScan.entries }
         scanLock.unlock()
         let found = scanBuiltIn()
-        scanLock.lock(); builtInScan = (stamp, found); lookups = [:]; scanLock.unlock()
+        scanLock.lock(); builtInScan = (stamp, found); lookups = [:]; revision &+= 1; scanLock.unlock()
         return found
     }
-    nonisolated(unsafe) private static var builtInScan: (stamp: Date?, entries: [Entry])?
+    nonisolated(unsafe) private static var builtInScan: (stamp: [Int], entries: [Entry])?
 
     static func reloadBuiltIn() {
         scanLock.lock(); builtInScan = nil; lookups = [:]; scanLock.unlock()
@@ -599,7 +611,7 @@ struct SpeechJob: Sendable {
         let parser = SSMLParser()
         parser.rules = rules
         parser.dictionary = phonemes == nil ? nil : dictionary
-        parser.exactPitch = exactPitch
+        parser.exactPitch = exactPitch || MacinTalkCompatibility.generation(for: voiceKey ?? "") != nil
         parser.phonemes = phonemes
         if let voiceKey, let settings {
             parser.prepareText = { MacinTalkCompatibility.prepare($0, voiceKey: voiceKey, settings: settings, spelling: $1) }
@@ -698,15 +710,15 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
         }
         job.text = out.trimmingCharacters(in: .whitespacesAndNewlines)
         job.trailingPauseMs = lastText.map { tokens[($0 + 1)...].reduce(0) {
-            if case .pause(let ms) = $1 { return $0 + ms }
+            if case .pause(let ms) = $1 { return min($0 + ms, 60_000) }
             return $0
         } } ?? 0
     }
 
     static func breakMs(_ attrs: [String: String]) -> Int {
         if let t = attrs["time"]?.trimmingCharacters(in: .whitespaces).lowercased() {
-            if t.hasSuffix("ms"), let v = Double(t.dropLast(2)) { return Int(v) }
-            if t.hasSuffix("s"), let v = Double(t.dropLast()) { return Int(v * 1000) }
+            if t.hasSuffix("ms"), let v = Double(t.dropLast(2)) { return v.isFinite ? Int(min(max(v, 0), 60_000)) : 0 }
+            if t.hasSuffix("s"), let v = Double(t.dropLast()) { return v.isFinite ? Int(min(max(v, 0), 60) * 1000) : 0 }
         }
         switch attrs["strength"] ?? "medium" {
         case "none": return 0
@@ -726,9 +738,17 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
             if let r = attributes["rate"] { current.rate = Self.scale(r, base: current.rate, keywords: [
                 "x-slow": 50, "slow": 75, "medium": 100, "default": 100, "fast": 150, "x-fast": 200]) }
             if let p = attributes["pitch"] { current.pitch = Self.pitchScale(p, base: current.pitch, linear: exactPitch) }
-            if let v = attributes["volume"], !v.hasSuffix("dB") {
-                current.volume = Self.scale(v, base: current.volume < 0 ? 80 : current.volume, keywords: [
-                    "silent": 0, "x-soft": 20, "soft": 40, "medium": 60, "default": 80, "loud": 90, "x-loud": 100])
+            if let v = attributes["volume"] {
+                let normalized = v.trimmingCharacters(in: .whitespaces).lowercased()
+                let base = current.volume < 0 ? (exactPitch ? 100 : 80) : current.volume
+                if normalized.hasSuffix("db") {
+                    if let db = Double(normalized.dropLast(2)), db.isFinite {
+                        current.volume = Int(min(max(Double(base) * pow(10, min(max(db, -96), 12) / 20), 0), 400).rounded())
+                    }
+                } else {
+                    current.volume = Self.scale(v, base: base, keywords: [
+                        "silent": 0, "x-soft": 20, "soft": 40, "medium": 60, "default": 80, "loud": 90, "x-loud": 100])
+                }
             }
         case "break":
             let ms = Self.breakMs(attributes)
@@ -818,7 +838,7 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
         guard factor.isFinite else { return base }
         // Vocalizer's own range (0.56-1.58) is applied where its escape is
         // written; MacinTalk takes far more (clamped at pbas 127 in the engine).
-        return Int((Double(base) * min(max(factor, 0.25), 10000)).rounded())
+        return Int(min(max(Double(base) * min(max(factor, 0.25), 10000), 1), 1_000_000).rounded())
     }
 
     /// "150%", "+20%", "-10%", "1.5", or a keyword -> percent.
@@ -826,9 +846,11 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
         let s = raw.trimmingCharacters(in: .whitespaces).lowercased()
         if let k = keywords[s] { return k }
         if s.hasSuffix("%"), let n = Double(s.dropLast()) {
-            return Int(((s.hasPrefix("+") || s.hasPrefix("-")) ? Double(base) * (1 + n / 100) : n).rounded())
+            guard n.isFinite else { return base }
+            let scaled = (s.hasPrefix("+") || s.hasPrefix("-")) ? Double(base) * (1 + n / 100) : n
+            return Int(min(max(scaled, 0), 10_000).rounded())
         }
-        if let n = Double(s) { return Int((Double(base) * n).rounded()) }
+        if let n = Double(s), n.isFinite { return Int(min(max(Double(base) * n, 0), 10_000).rounded()) }
         return base
     }
 }

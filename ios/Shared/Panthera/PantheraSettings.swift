@@ -1,10 +1,9 @@
 // Adapted from Panthera Speech. See third_party/panthera/LICENSE.
 import Foundation
 
-/// Per-generation settings, in the shared App Group defaults so the app writes
-/// them and the extension reads them on every utterance. Same names and
-/// ranges as Android's PantheraEngine.Settings; the defaults for numbers and
-/// phrase breaks differ (Oct 23: the engine's own, as on the Mac).
+/// Per-generation speech settings. Classic stores these in settings.json in
+/// the extension's store; legacy UserDefaults helpers below support imports.
+/// Defaults preserve the maintained Panthera Apple behavior.
 public struct PantheraSettings: Codable, Equatable, Sendable {
     public enum NumberStyle: String, Codable, CaseIterable, Sendable { case fix, words, off }
     public enum Phrasing: String, Codable, CaseIterable, Sendable { case fewest, fewer, more, most, leopard }

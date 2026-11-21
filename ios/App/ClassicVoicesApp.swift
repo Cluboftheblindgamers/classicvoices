@@ -251,7 +251,7 @@ enum Diagnose {
             for c in comps { print("DIAG   \(c.manufacturerName) / \(c.name) type=\(c.typeName) sandboxSafe=\(c.isSandboxSafe)") }
             let all = AVAudioUnitComponentManager.shared().components(passingTest: { c, _ in c.name.contains("Classic") })
             print("DIAG components named Classic*: \(all.map { "\($0.name) \($0.typeName)" })")
-            let ours = AVSpeechSynthesisVoice.speechVoices().filter { $0.identifier.contains("com.levigobin.ClassicVoices.ios") }
+            let ours = AVSpeechSynthesisVoice.speechVoices().filter { $0.identifier.contains(BuildIdentity.voicePrefix + ".ios") }
             print("DIAG system voices from us: \(ours.count) \(ours.prefix(3).map { $0.name })")
             for v in AVSpeechSynthesisVoice.speechVoices() where v.name.contains("iOS 6") {
                 print("DIAG   voice \(v.name) id=\(v.identifier) lang=\(v.language)")

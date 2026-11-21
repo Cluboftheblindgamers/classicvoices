@@ -69,8 +69,10 @@ final class StoreOps {
             guard let u = url(message), let data = message["data"] as? Data else { return fail("bad write") }
             do {
                 try fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try removeItem(u)
-                try data.write(to: u)
+                // Keep legacy group links pointing at the updated file, and
+                // publish small files atomically so the speech process never
+                // observes half a settings JSON or a temporarily missing file.
+                try data.write(to: u.resolvingSymlinksInPath(), options: .atomic)
                 return ["ok": true]
             } catch { return fail(error.localizedDescription) }
         case "read":
@@ -124,7 +126,31 @@ final class StoreOps {
         // Through this process's engine stream, the way speech requests go: a
         // second MacinTalk engine wouldn't fit in the extension's address space.
         case "test":
-            guard let key = message["key"] as? String, let stream = VoiceEngine.shared.stream else { return fail("no engine") }
+            guard let key = message["key"] as? String else { return fail("no voice") }
+            if key.hasPrefix("mt") {
+                let settings = SpeechSettings.current
+                let text = (message["text"] as? String ?? "Testing.")
+                    .replacingOccurrences(of: "&", with: "&amp;")
+                    .replacingOccurrences(of: "<", with: "&lt;")
+                    .replacingOccurrences(of: ">", with: "&gt;")
+                let provider = MacinTalkProvider()
+                defer { provider.cancel() }
+                let job = SpeechJob.from(ssml: "<speak>\(text)</speak>", voiceKey: key, settings: settings)
+                provider.submit(job, voiceKey: key, settings: settings)
+                let start = DispatchTime.now().uptimeNanoseconds
+                var frames = 0, done = false
+                var buffer = [Float](repeating: 0, count: 4096)
+                while !done && DispatchTime.now().uptimeNanoseconds - start < 20_000_000_000 {
+                    let result = buffer.withUnsafeMutableBufferPointer { provider.read(into: $0.baseAddress!, count: $0.count, wait: 0.05) }
+                    frames += result.frames; done = result.complete
+                }
+                let error = provider.metrics.error
+                return ["rc": done && frames > 0 && error.isEmpty ? 0 : -1,
+                        "audioMs": Double(frames) * 1000 / 22050,
+                        "totalMs": Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6,
+                        "error": done ? error : "Voice test timed out"]
+            }
+            guard let stream = VoiceEngine.shared.stream else { return fail("no engine") }
             let t0 = Date()
             vxs_set_rules_pack(stream, nil)
             vxs_start(stream, key, message["text"] as? String ?? "Testing.", 100, 100, -1, 0)
