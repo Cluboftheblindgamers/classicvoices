@@ -64,7 +64,7 @@
       "behavior": "Try a voice uses the same rules/settings as VoiceOver",
       "verified": false,
       "implementation": "shared provider integrated",
-      "validation": "Mac and iOS app/extension compile; Mac system speech renders; preview listening acceptance pending"
+      "validation": "Mac and iOS app/extension compile; Mac system speech renders; preview listening acceptance pending; user reports Mac trial sounds pretty close to Panthera"
     },
     {
       "id": "short-phrase-cache",
@@ -120,7 +120,7 @@
       "behavior": "Stable Classic voice IDs, duplicate-copy diagnostics and safe uninstall",
       "verified": false,
       "implementation": "private trial verified; cleanup work pending",
-      "validation": "macOS registered two isolated voices and rendered Alex; normal IDs unchanged by default; duplicate-copy/uninstall diagnostics pending"
+      "validation": "macOS registered two isolated voices and rendered Alex; normal IDs unchanged by default; duplicate-copy/uninstall diagnostics pending; investigated crowded macOS chooser: private trial advertises only Alex/Fred; 96 entries belong to original Panthera and one to earlier Classic copy"
     },
     {
       "id": "packer",

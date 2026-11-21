@@ -2793,3 +2793,14 @@ Remaining gates, in order:
 Do not replace the stable Panthera app or publish this branch as a completed
 migration until the acceptance inventory is satisfied. Do not push Apple data,
 generated translations, private packages, or rendered audio to GitHub.
+
+
+Mac trial feedback, 2026-11-21: user reports speech sounds pretty close to
+Panthera. User also reports uninstalled-looking voices in macOS VoiceOver's
+chooser. Live AVSpeechSynthesisVoice inventory identifies two voices from the
+private trial (Snow Leopard Alex/Fred), 96 from original Panthera's four
+extensions, and one Mavericks Samantha from the earlier Classic installation.
+The test provider is not advertising the full download catalog. macOS combines
+registered providers; retain original registration during fallback testing.
+Before release, revisit duplicate-copy diagnostics and migration/uninstall UX.
+No app registration or selected system voice was changed during this inspection.
