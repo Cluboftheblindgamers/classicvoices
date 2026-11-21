@@ -6,7 +6,7 @@ let log = Logger(subsystem: "com.levigobin.ClassicVoices", category: "synth")
 private final class BundleMarker {}
 
 #if os(macOS)
-let appGroup = "7WV49AN2BX.com.levigobin.ClassicVoices"  // team-prefixed groups need no portal setup on macOS
+let appGroup = BuildIdentity.value("ClassicVoicesAppGroup") ?? "7WV49AN2BX.com.levigobin.ClassicVoices"
 #else
 /// Sideloading tools rename App Groups when they re-sign the app with
 /// someone's own Apple ID. AltStore and SideStore list the new names under
@@ -72,8 +72,8 @@ enum VoiceCatalog {
         var macinTalk = false      // Apple MacinTalk voice (Tiger/Leopard/Snow Leopard)
         private var tag: String { enhanced ? build + "e" : build }
         var identifier: String {
-            if let macDir { return "com.levigobin.ClassicVoices.\(build).\(macDir)" }
-            return "com.levigobin.ClassicVoices.\(tag).\(language)"
+            if let macDir { return "\(BuildIdentity.voicePrefix).\(build).\(macDir)" }
+            return "\(BuildIdentity.voicePrefix).\(tag).\(language)"
         }
         var displayName: String {
             if macinTalk { return "\(name) (\(buildName))" }
@@ -197,6 +197,9 @@ enum VoiceCatalog {
     /// Directory containing one folder per build. Works from both the
     /// extension and the containing app.
     static let root: URL? = {
+        #if CV_PORT_TEST
+        if let path = ProcessInfo.processInfo.environment["CV_PORT_ROOT"] { return URL(fileURLWithPath: path) }
+        #endif
         let appex = Bundle.main.builtInPlugInsURL?.appendingPathComponent("Synth.appex")
         let candidates = [
             Bundle(for: BundleMarker.self).resourceURL,
@@ -205,14 +208,15 @@ enum VoiceCatalog {
         ]
         for base in candidates.compactMap({ $0 }) {
             let dir = base.appendingPathComponent("Voices")
-            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("ios6/voiced").path) {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent("ios6/voiced").path)
+                || (BuildIdentity.isTestCopy && FileManager.default.fileExists(atPath: dir.appendingPathComponent("mt106/MacinTalk").path)) {
                 return dir
             }
         }
         #if CV_PUBLIC
         // The released Mac app carries nothing of Apple's: the app imports the
         // engines into the App Group (MacApp/EngineImport.swift).
-        if let dir = importedRoot {
+        if let dir = importedRoot ?? extensionStore {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             return dir
         }
@@ -228,7 +232,13 @@ enum VoiceCatalog {
     }
     /// The fast code the released Mac app builds on this Mac (cvnative_<build>.so).
     static var nativeDir: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("Native")
+        if BuildIdentity.isTestCopy {
+            let candidates = [Bundle(for: BundleMarker.self).resourceURL,
+                Bundle.main.builtInPlugInsURL?.appendingPathComponent("Synth.appex/Contents/Resources")]
+            if let directory = candidates.compactMap({ $0?.appendingPathComponent("Native") })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) }) { return directory }
+        }
+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("Native")
     }
     #endif
 
@@ -313,7 +323,12 @@ enum VoiceCatalog {
     /// (which also links to the App Group's voices, see adoptLegacy), or, in
     /// the app, the App Group for the few developer tools that read files
     /// directly. App features go through VoiceStore instead.
-    static var enhancedRoot: URL? { extensionStore ?? legacyGroupRoot }
+    static var enhancedRoot: URL? {
+        #if CV_PORT_TEST
+        if let path = ProcessInfo.processInfo.environment["CV_PORT_ROOT"] { return URL(fileURLWithPath: path) }
+        #endif
+        return extensionStore ?? legacyGroupRoot
+    }
 
     /// Extension only: make voices the App Group holds appear in the store as
     /// symbolic links, so one root serves both. Links are refreshed each time
@@ -420,7 +435,7 @@ enum VoiceCatalog {
             return found
         }
         scanLock.lock()
-        scanned = (sig, found); lookups = [:]
+        scanned = (sig, found); lookups = [:]; revision &+= 1
         let wasLocked = scannedLocked
         scannedLocked = false
         scanLock.unlock()
@@ -438,9 +453,11 @@ enum VoiceCatalog {
     /// entry(forIdentifier:) / entry(forKey:) answers for the current scan
     nonisolated(unsafe) private static var lookups: [String: Entry?] = [:]
     private static let scanLock = NSLock()
+    nonisolated(unsafe) private static var revision: UInt64 = 0
+    static var dataRevision: UInt64 { scanLock.lock(); defer { scanLock.unlock() }; return revision }
 
     static func invalidateEnhanced() {
-        scanLock.lock(); scanned = nil; lookups = [:]; scanLock.unlock()
+        scanLock.lock(); scanned = nil; lookups = [:]; revision &+= 1; scanLock.unlock()
     }
 
     /// Looked up on every speech request, so remembered until the voices change.
@@ -556,13 +573,16 @@ enum VoiceCatalog {
 }
 
 /// Plain text plus prosody pulled out of the SSML the system hands us.
-struct SpeechJob {
+struct SpeechJob: Sendable {
     var text = ""
     var rate = 100     // percent of normal: 10...400 (MacinTalk's modern curve), Vocalizer 50...400
     var pitch = 100    // percent of normal, engine accepts 50...200
     var volume = -1    // 0...100, or -1 to leave the voice's default
     var trailingPauseMs = 0  // silence after the speech (an SSML <break> at the end)
     var markNames: [String] = []  // each <mark>'s name: ESC\mrk=N\ in the text is markNames[N]
+    var macinTalkWPM: Int?  // exact absolute rate from the Panthera SSML path
+    var macinTalkGain: Float = 1
+    var macinTalkPitchTenths: Int?
 
     /// `rules` (Apple's text rules for the voice's language) are applied to
     /// the text itself, never to the prosody markup around it.
@@ -571,22 +591,36 @@ struct SpeechJob {
     /// `phonemes`: engine text for a <phoneme>'s IPA (and whether it comes
     /// right after a word), or nil to say the element's own text.
     static func from(ssml: String, rules: PronunciationRules? = nil, dictionary: CommunityDictionary? = nil,
-                     exactPitch: Bool = false, phonemes: ((String, Bool) -> String?)? = nil) -> SpeechJob {
+                     exactPitch: Bool = false, phonemes: ((String, Bool) -> String?)? = nil,
+                     voiceKey: String? = nil, settings: SpeechSettings? = nil) -> SpeechJob {
+        if let voiceKey, let settings,
+           let job = MacinTalkCompatibility.job(ssml: ssml, voiceKey: voiceKey, settings: settings,
+                                               dictionary: dictionary, phonemes: phonemes) { return job }
         let parser = SSMLParser()
         parser.rules = rules
         parser.dictionary = phonemes == nil ? nil : dictionary
         parser.exactPitch = exactPitch
         parser.phonemes = phonemes
+        if let voiceKey, let settings {
+            parser.prepareText = { MacinTalkCompatibility.prepare($0, voiceKey: voiceKey, settings: settings, spelling: $1) }
+        }
         let xml = XMLParser(data: Data(ssml.utf8))
         xml.delegate = parser
         if xml.parse() {
             var job = parser.job
             parser.assemble(into: &job)
+            if let voiceKey, let settings, settings.macinTalkCompatibility,
+               let generation = MacinTalkCompatibility.generation(for: voiceKey) {
+                job.macinTalkWPM = settings.macinTalkSettings(generation).wpm(requestMultiplier: Double(job.rate) / 100)
+                job.macinTalkGain = job.volume < 0 ? 1 : Float(job.volume) / 100
+                job.volume = 100
+            }
             return job
         }
         // Not well-formed: strip anything tag-like.
         var job = SpeechJob()
-        let plain = ssml.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        let stripped = ssml.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        let plain = parser.prepareText?(stripped, false) ?? stripped
         job.text = (phonemes == nil ? nil : dictionary).map { $0.speechText(plain, rules: rules, phonemes: phonemes) }
             ?? rules?.apply(plain) ?? plain
         return job
@@ -594,6 +628,7 @@ struct SpeechJob {
 }
 
 private final class SSMLParser: NSObject, XMLParserDelegate {
+    var prepareText: ((String, Bool) -> String)?
     var job = SpeechJob()
     var rules: PronunciationRules?
     var dictionary: CommunityDictionary?  // the community dictionary, applied before the rules
@@ -641,7 +676,8 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
             }
             switch tok {
             case .text(let t):
-                let clean = t.replacingOccurrences(of: "\u{1b}", with: " ")
+                let plain = t.replacingOccurrences(of: "\u{1b}", with: " ")
+                let clean = prepareText?(plain, spell) ?? plain
                 // spelled text is read as it is
                 out += spell ? clean : dictionary?.speechText(clean, rules: rules, phonemes: phonemes) ?? rules?.apply(clean) ?? clean
             case .phoneme(let ipa, let text):
@@ -802,7 +838,7 @@ final class VoiceEngine {
     static let shared = VoiceEngine()
     let stream: OpaquePointer?
 
-    private init() {
+    init() {
         if let root = VoiceCatalog.root {
             #if CV_PUBLIC
             if let native = VoiceCatalog.nativeDir {
@@ -825,21 +861,38 @@ final class VoiceEngine {
     /// nil for the voice as it shipped. Its rules come with `job`'s text.
     func speak(_ job: SpeechJob, voiceKey: String, fallbackKey: String? = nil, rulesPack: String? = nil,
                resetCommands: Bool = true, twentyFourHour: Bool = true, modernRate: Bool = true,
-               steadyPauses: Bool = true, spellingPauses: Bool = false, spellLowercase: Bool = false) {
+               steadyPauses: Bool = true, spellingPauses: Bool = false, spellLowercase: Bool = false,
+               settings: SpeechSettings? = nil) {
         guard let stream else { return }
+        let generation = MacinTalkCompatibility.generation(for: voiceKey)
+        let profile = settings.flatMap { value in
+            value.macinTalkCompatibility ? generation.map { value.macinTalkSettings($0) } : nil
+        }
+        let phraseModes: [PantheraSettings.Phrasing: Int32] = [.leopard: 0, .fewest: 1, .fewer: 2, .more: 3, .most: 4]
+        let phrasing = generation?.supportsPhrasing == true ? phraseModes[profile?.phrasing ?? .leopard] ?? 0 : 0
+        var volumeMilli: Int32 = -1
+        if let profile, let generation, let name = voiceKey.split(separator: "/").last {
+            volumeMilli = mte_volume_milli(Int32(profile.engineVolume(generation)), generation.rawValue, String(name))
+        }
+        vxs_set_mt_voice_options(stream, Int32(profile == nil ? 0 : job.macinTalkWPM ?? profile!.wpm(requestMultiplier: Double(job.rate) / 100)),
+                                Int32(profile?.inflection ?? -1), phrasing, profile?.expandAbbreviations == false ? 0 : 1,
+                                volumeMilli, job.macinTalkGain, Int32(job.macinTalkPitchTenths ?? 10000))
         vxs_set_rules_pack(stream, rulesPack)
         vxs_set_steady_pauses(stream, steadyPauses ? 1 : 0)
         vxs_set_spelling_pauses(stream, spellingPauses ? 1 : 0)
         vxs_set_spell_lowercase(stream, spellLowercase ? 1 : 0)
-        vxs_set_mt_reset(stream, resetCommands ? 1 : 0)
-        vxs_set_mt_24_hour(stream, twentyFourHour ? 1 : 0)
-        vxs_set_mt_modern_rate(stream, modernRate ? 1 : 0)
+        vxs_set_mt_reset(stream, (profile?.resetCommands ?? resetCommands) ? 1 : 0)
+        vxs_set_mt_24_hour(stream, profile == nil && twentyFourHour ? 1 : 0)
+        vxs_set_mt_modern_rate(stream, profile == nil && modernRate ? 1 : 0)
         vxs_start_with_fallback(stream, voiceKey, fallbackKey, job.text, Int32(job.rate), Int32(job.pitch),
                                 Int32(job.volume), Int32(job.trailingPauseMs))
     }
 
     func cancel() {
         if let stream { vxs_cancel(stream) }
+    }
+    func requestCancel() {
+        if let stream { vxs_request_cancel(stream) }
     }
 
     /// Engine text that says the IPA in a voice (core/vxphonemes.c), or nil when it can't.

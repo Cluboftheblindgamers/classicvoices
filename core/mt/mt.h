@@ -69,6 +69,7 @@ struct Mt {
 
     MtImage images[8];
     int nimages;
+    int phrase_mode, no_abbreviations; // per-engine Panthera controls
 
     volatile int dying;      // shutting down: guest threads fault out
     volatile int live;       // guest threads other than the caller's

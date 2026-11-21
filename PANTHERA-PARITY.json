@@ -1,0 +1,143 @@
+{
+  "baseline": "6e1e68b411eb0d3322a2124bddca3c7ee3302703",
+  "status": "initial Mac/iOS implementation; automated checks passed; manual and release gates pending",
+  "sourceReference": "Panthera Speech Apple port, local maintained baseline 2026-11-21",
+  "features": [
+    {
+      "id": "engine-data-import",
+      "behavior": "Existing folder/disc and individual voice import",
+      "verified": false,
+      "implementation": "retained upstream",
+      "validation": "new imports and all source formats not revalidated on port"
+    },
+    {
+      "id": "native-compilation",
+      "behavior": "On-device/native compilation without redistributing Apple data",
+      "verified": false,
+      "implementation": "retained upstream",
+      "validation": "local Snow Leopard native provider rendered; clean on-device compilation UI not revalidated"
+    },
+    {
+      "id": "pronunciation-text",
+      "behavior": "Receipt read/red, minute, compact durations, symbols, dates, abbreviations, capitals, emoji and script fallback",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "46 integration checks and original text/SSML corpus pass"
+    },
+    {
+      "id": "identifier-latency",
+      "behavior": "Space hash-like identifiers before expensive word analysis",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "identifier spacing regression checks pass; pathological unbroken words can still time out"
+    },
+    {
+      "id": "voiceover-ssml",
+      "behavior": "Generation-specific commas, pauses, capitals, deleted text, literal letters, pause-only requests",
+      "verified": false,
+      "implementation": "ported with rich-SSML fallback",
+      "validation": "traced common SSML and rich parser preservation tests pass; live VoiceOver comparison pending"
+    },
+    {
+      "id": "generation-settings",
+      "behavior": "Volume, fixed rate, boost, inflection, number reading, engine phrasing, abbreviation expansion, command acceptance/reset, date and capitals, pauses and quick interruption",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "text/number/settings tests, real four-generation C renders and Mac system-hosted fixed-rate change pass; full per-voice matrix pending"
+    },
+    {
+      "id": "scoped-pronunciations",
+      "behavior": "Generation and exact-voice scopes, phonemes, longer-match precedence, empty voice selection applies nowhere",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "legacy/generation/voice/empty scope persistence checks pass; manual UI acceptance pending"
+    },
+    {
+      "id": "settings-export-import",
+      "behavior": "Panthera settings and scoped pronunciation migration, export and rollback",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "plist/JSON roundtrip and privacy-default regression checks pass"
+    },
+    {
+      "id": "preview-parity",
+      "behavior": "Try a voice uses the same rules/settings as VoiceOver",
+      "verified": false,
+      "implementation": "shared provider integrated",
+      "validation": "Mac and iOS app/extension compile; Mac system speech renders; preview listening acceptance pending"
+    },
+    {
+      "id": "short-phrase-cache",
+      "behavior": "Bounded audio caching and cancellation-safe cached playback",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "budget/LRU/stale writer tests and real-engine cached-during-cancellation test pass"
+    },
+    {
+      "id": "long-reading",
+      "behavior": "Bounded rolling audio memory and uninterrupted multi-sentence reading",
+      "verified": false,
+      "implementation": "bounded provider ported",
+      "validation": "real native provider completed 139 seconds of audio; queue budget tests pass"
+    },
+    {
+      "id": "interruption-recovery",
+      "behavior": "Rapid supersession, cancellation, late render isolation, recovery after errors",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "20 supersessions, late writers, blocked writer wakeup and real timeout-to-next-request recovery pass"
+    },
+    {
+      "id": "idle-recovery",
+      "behavior": "Wall-clock changes, sleep/wake, background and lock-screen stability",
+      "verified": false,
+      "implementation": "pending",
+      "validation": "Mac sleep/wake and iOS background/lock-screen 12-minute recovery must be repeated"
+    },
+    {
+      "id": "accessibility",
+      "behavior": "Tabs, VoiceOver labels/values, editor focus restoration, scoped selectors start empty",
+      "verified": false,
+      "implementation": "controls integrated",
+      "validation": "Mac generation radio group, accessible labels/values, empty voice selection and focus return implemented; manual VoiceOver acceptance pending"
+    },
+    {
+      "id": "sideload-settings",
+      "behavior": "Voice settings transfer without an app group, clear status if unavailable",
+      "verified": false,
+      "implementation": "retained file channel",
+      "validation": "real Mac extension write/read/restore and system-hosted rate update pass; iOS without app group pending"
+    },
+    {
+      "id": "diagnostics-privacy",
+      "behavior": "Opt-in spoken-text logging, timing without private text by default",
+      "verified": false,
+      "implementation": "ported",
+      "validation": "spoken text requires opt-in; settings imports force logging off; technical logs retain timing without text"
+    },
+    {
+      "id": "voice-registration",
+      "behavior": "Stable Classic voice IDs, duplicate-copy diagnostics and safe uninstall",
+      "verified": false,
+      "implementation": "private trial verified; cleanup work pending",
+      "validation": "macOS registered two isolated voices and rendered Alex; normal IDs unchanged by default; duplicate-copy/uninstall diagnostics pending"
+    },
+    {
+      "id": "packer",
+      "behavior": "Accessible self-contained Mac/Windows packing UI and packed settings",
+      "verified": false,
+      "implementation": "pending",
+      "validation": "Panthera Mac/Windows packing wizard and packed settings must be adapted to Classic ABI/layout"
+    },
+    {
+      "id": "platforms",
+      "behavior": "Mac and iOS first, preserving Classic Vocalizer behavior",
+      "verified": false,
+      "implementation": "Mac/iOS initial port",
+      "validation": "Mac Release app/extension build and unsigned iOS compile-only app/extension build pass; Vocalizer parser tests pass; live Vocalizer/device matrix pending"
+    }
+  ],
+  "validationDate": "2026-11-21",
+  "validationScope": "Apple Silicon Mac; iOS compile-only; local Snow Leopard native code; other MacinTalk generations interpreted render checks",
+  "verifiedMeaning": "True requires complete feature acceptance; passing partial checks is recorded under validation, not full parity."
+}

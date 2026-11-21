@@ -38,6 +38,7 @@ final class MacSetup {
     var needed: Bool { !remaining.isEmpty }
 
     func start() {
+        if BuildIdentity.isTestCopy { return }
         #if CV_PUBLIC
         if !observing {
             observing = true

@@ -94,6 +94,8 @@ final class VoiceLibrary {
     private(set) var items: [VoiceItem] = []
     private(set) var hidden = VoiceCatalog.hiddenVoices
     private(set) var settings = SpeechSettings()
+    private let settingsQueue = DispatchQueue(label: "classicvoices.settings", qos: .userInitiated)
+    @ObservationIgnored private var pendingSettingsWrites = 0
 
     init() {
         rebuild()
@@ -105,7 +107,7 @@ final class VoiceLibrary {
         // off the main thread, and again after every change.
         VoiceStore.shared.onChange = { [weak self] in
             guard let self else { return }
-            self.settings = VoiceStore.shared.snapshot.settings
+            if self.pendingSettingsWrites == 0 { self.settings = VoiceStore.shared.snapshot.settings }
             self.pronunciation.refresh()
             if self.settings.newerRulesWanted { self.pronunciation.ensure() }
             self.enhanced.refresh()
@@ -151,7 +153,7 @@ final class VoiceLibrary {
             // A package installs the premium voice and, often, a compact one.
             let folders = mac.installed.contains(v.id) ? MacDownloads.folders(of: v) : [v.name]
             for folder in folders {
-                let id = "com.levigobin.ClassicVoices.\(v.era).\(folder)"
+                let id = "\(BuildIdentity.voicePrefix).\(v.era).\(folder)"
                 if var item = byID[id] {
                     // A bundled compact stays undeletable.
                     if item.kind == .premium || mac.installed.contains(v.id) && !isBundled(item) { item.macPackage = v }
@@ -200,7 +202,11 @@ final class VoiceLibrary {
         guard s != settings else { return }
         let dictionariesTurnedOn = s.communityDictionaries && !settings.communityDictionaries
         settings = s
-        Task.detached { VoiceStore.shared.saveSettings(s) }
+        pendingSettingsWrites += 1
+        settingsQueue.async { [weak self] in
+            VoiceStore.shared.saveSettings(s)
+            Task { @MainActor in self?.pendingSettingsWrites -= 1 }
+        }
         if dictionariesTurnedOn { CommunityDictionary.refreshAll(force: true) }
         // The newer rules need their packs: fetched the first time any voice uses them.
         if s.newerRulesWanted { pronunciation.ensure() }
@@ -303,7 +309,7 @@ final class VoiceLibrary {
     /// Removes a premium Mac OS X voice and keeps its compact.
     func removePremium(_ item: VoiceItem) {
         guard let v = item.macPackage else { return }
-        let prefix = "com.levigobin.ClassicVoices.\(v.era)."
+        let prefix = "\(BuildIdentity.voicePrefix).\(v.era)."
         guard item.id.hasPrefix(prefix) else { return }
         mac.remove(v, folder: String(item.id.dropFirst(prefix.count)))
     }
@@ -311,7 +317,7 @@ final class VoiceLibrary {
     /// The other voices that go with this one when it's deleted.
     func packageMates(_ item: VoiceItem) -> [String] {
         guard let v = item.macPackage else { return [] }
-        return MacDownloads.folders(of: v).filter { "com.levigobin.ClassicVoices.\(v.era).\($0)" != item.id }
+        return MacDownloads.folders(of: v).filter { "\(BuildIdentity.voicePrefix).\(v.era).\($0)" != item.id }
     }
 }
 
@@ -502,7 +508,7 @@ struct PlatformTab: View {
         return Page {
             #if CV_PUBLIC
             MacUpdateSection()
-            MacSetupSection()
+            if !BuildIdentity.isTestCopy { MacSetupSection() }
             #endif
             PageSection(nil) {
                 SearchField(text: $query)
@@ -741,7 +747,7 @@ final class SamplePlayer {
 
     /// Samples/<identifier without com.levigobin.ClassicVoices.>.m4a in the app.
     nonisolated static func url(for id: String) -> URL? {
-        let prefix = "com.levigobin.ClassicVoices."
+        let prefix = BuildIdentity.voicePrefix + "."
         guard id.hasPrefix(prefix) else { return nil }
         return Bundle.main.url(forResource: String(id.dropFirst(prefix.count)), withExtension: "m4a",
                                subdirectory: "Samples")
@@ -905,6 +911,11 @@ struct VoiceDetail: View {
                                        value: library.settings.resetCommandsOverride[item.id]) { v in
                             library.updateSettings { $0.resetCommandsOverride[item.id] = v }
                         }
+                        .disabled(library.settings.macinTalkCompatibility)
+                        if library.settings.macinTalkCompatibility {
+                            Text("Command reset follows this generation’s MacinTalk settings.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                 } header: {
                     Text("For This Voice")
@@ -1049,12 +1060,20 @@ struct SettingsTab: View {
 /// The speech settings, for every voice unless a voice says otherwise.
 struct SpeechSettingsView: View {
     @Environment(VoiceLibrary.self) private var library
+    @State private var showingMacinTalk = false
+    @AccessibilityFocusState private var macinTalkFocus: Bool
     #if CV_PUBLIC
     @AppStorage("update.automatic") private var updateAutomatically = true
     #endif
 
     var body: some View {
         Form {
+            Section {
+                Button("MacinTalk settings and pronunciations…") { showingMacinTalk = true }
+                    .accessibilityFocused($macinTalkFocus)
+            } footer: {
+                Text("Panthera pronunciation corrections, inflection and VoiceOver behavior for Tiger, Leopard, Snow Leopard and Lion voices.")
+            }
             Section {
                 Toggle("Apple\u{2019}s pronunciation rules", isOn: Binding(
                     get: { library.settings.rules },
@@ -1118,6 +1137,7 @@ struct SpeechSettingsView: View {
                     Text("Same as today\u{2019}s Alex").tag(true)
                     Text("Classic").tag(false)
                 }
+                .disabled(library.settings.macinTalkCompatibility)
             } header: {
                 Text("MacinTalk")
             } footer: {
@@ -1127,10 +1147,12 @@ struct SpeechSettingsView: View {
                 Toggle("Speech commands last one utterance", isOn: Binding(
                     get: { library.settings.resetCommands },
                     set: { v in library.updateSettings { $0.resetCommands = v } }))
+                    .disabled(library.settings.macinTalkCompatibility)
             } footer: {
                 Text("Embedded commands such as [[inpt PHON]], [[rate 300]] or [[char LTRL]] change a MacinTalk voice until something changes them back, so a command VoiceOver reads out once could leave the voice in that mode. With this on, each utterance starts from the voice\u{2019}s normal settings. Turn it off to keep a command in effect across utterances. Values past what the engine takes (rate above 32767, pbas above 127, pmod above 200, volm above 2) are set to the highest it takes.")
             }
             #if CV_PUBLIC
+            if !BuildIdentity.isPantheraPort {
             Section {
                 Toggle("Update automatically", isOn: $updateAutomatically)
                 Toggle("Development builds", isOn: Binding(
@@ -1145,17 +1167,20 @@ struct SpeechSettingsView: View {
             } footer: {
                 Text("A new version of Classic Voices is downloaded and checked in the background, and installed when you quit Classic Voices (or straight away with Restart Now). Off, Classic Voices asks first. Your voices stay either way. Development builds: instead of each release, follow the development branch and update to every change (checked every hour): newer, but less tested.")
             }
+            }
             #endif
             Section {
                 Toggle("24-hour times in Leopard voices", isOn: Binding(
                     get: { library.settings.twentyFourHour },
                     set: { v in library.updateSettings { $0.twentyFourHour = v } }))
+                    .disabled(library.settings.macinTalkCompatibility)
             } footer: {
                 Text("Leopard reads a time such as 13:45 as \u{201c}one forty-five PM\u{201d}. With this on, its voices read 24-hour times the way Tiger, Snow Leopard and Lion do: \u{201c}thirteen forty-five\u{201d}, \u{201c}eighteen oh five\u{201d}.")
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .sheet(isPresented: $showingMacinTalk, onDismiss: { macinTalkFocus = true }) { MacinTalkSettingsView() }
     }
 }
 

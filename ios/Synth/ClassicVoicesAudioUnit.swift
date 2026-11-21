@@ -7,6 +7,8 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                                        channels: 1, interleaved: false)!
     private var outputBus: AUAudioUnitBus!
     private var busses: AUAudioUnitBusArray!
+    private let macinTalk = MacinTalkProvider()
+    private let macinTalkMode = OSAllocatedUnfairLock(initialState: false)
 
     public override init(componentDescription: AudioComponentDescription,
                          options: AudioComponentInstantiationOptions = []) throws {
@@ -20,9 +22,12 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         let last = UserDefaults.standard.string(forKey: "lastVoiceKey") ?? "ios6/en-US"
         let lastEntry = VoiceCatalog.entry(forKey: last)
         let settings = SpeechSettings.current
-        VoiceEngine.shared.preload(last, rulesPack: PronunciationRules.newerPack(
-            forVoiceKey: last, identifier: lastEntry?.identifier ?? "", language: lastEntry?.language ?? "",
-            settings: settings))
+        if last.hasPrefix("mt") { MacinTalkProvider.preload(last, settings: settings) }
+        else {
+            VoiceEngine.shared.preload(last, rulesPack: PronunciationRules.newerPack(
+                forVoiceKey: last, identifier: lastEntry?.identifier ?? "", language: lastEntry?.language ?? "",
+                settings: settings))
+        }
         // and its rules: reading a newer pack's thousands of them takes tens of milliseconds
         DispatchQueue.global(qos: .userInitiated).async {
             _ = PronunciationRules.rules(forVoiceKey: last, identifier: lastEntry?.identifier ?? "",
@@ -30,6 +35,7 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         }
         log.notice("CLASSICVOICES audio unit created; root=\(VoiceCatalog.root?.path ?? "nil", privacy: .public) voices=\(VoiceCatalog.entries.count)")
     }
+    deinit { macinTalk.cancel() }
 
     public override var outputBusses: AUAudioUnitBusArray { busses }
 
@@ -84,20 +90,30 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         // the person's own dictionary entries always, the community's when turned on (none while the editor is open)
         let dictionary = CommunityDictionary.forVoice(key: key, language: language, community: settings.communityDictionaries)
         let job = SpeechJob.from(ssml: request.ssmlRepresentation, rules: rules, dictionary: dictionary,
-                                 exactPitch: key.hasPrefix("mt")) { ipa, joined in
+                                 exactPitch: key.hasPrefix("mt"), phonemes: { ipa, joined in
             VoiceEngine.phonemeText(key: key, language: language, ipa: ipa, joined: joined)
-        }
+        }, voiceKey: key, settings: settings)
         marks.withLock { $0 = (job.markNames.isEmpty ? nil : request, job.markNames) }
         let fallback = entry.flatMap { settings.pitchFallbackEnabled($0.identifier) ? VoiceCatalog.compactCounterpart(of: $0)?.key : nil }
         let pack = PronunciationRules.newerPack(forVoiceKey: key, identifier: entry?.identifier ?? "", language: language,
                                                 settings: settings)
-        VoiceEngine.shared.speak(job, voiceKey: key, fallbackKey: fallback, rulesPack: pack,
+        let useMacinTalk = key.hasPrefix("mt")
+        macinTalkMode.withLock { $0 = useMacinTalk }
+        if useMacinTalk { macinTalk.submit(job, voiceKey: key, settings: settings) }
+        else {
+            macinTalk.supersedeOtherRequests()
+            macinTalk.cancel()
+            VoiceEngine.shared.speak(job, voiceKey: key, fallbackKey: fallback, rulesPack: pack,
                                  resetCommands: settings.resetCommandsEnabled(entry?.identifier ?? ""),
                                  twentyFourHour: settings.twentyFourHour, modernRate: settings.modernRate,
                                  steadyPauses: settings.steadyPauses, spellingPauses: settings.spellingPauses,
-                                 spellLowercase: settings.spellLowercase)
+                                 spellLowercase: settings.spellLowercase, settings: settings)
+        }
         dumpRenderLog(start: previous.0, count: previous.1, renders: previous.2)
-        log.notice("CLASSICVOICES request \(key, privacy: .public) fallback=\(fallback ?? "-", privacy: .public) newer=\(pack != nil) rate=\(job.rate) pitch=\(job.pitch) pause=\(job.trailingPauseMs) text=[\(job.text.replacingOccurrences(of: "\u{1b}", with: "<ESC>"), privacy: .public)] ssml=\(request.ssmlRepresentation, privacy: .public)")
+        log.notice("CLASSICVOICES request \(key, privacy: .public) rate=\(job.rate) pitch=\(job.pitch) pause=\(job.trailingPauseMs)")
+        if settings.logSpokenText {
+            log.notice("CLASSICVOICES spoken text=[\(job.text.replacingOccurrences(of: "\u{1b}", with: "<ESC>"), privacy: .public)] ssml=\(request.ssmlRepresentation, privacy: .public)")
+        }
         if UserDefaults.standard.string(forKey: "lastVoiceKey") != key {
             UserDefaults.standard.set(key, forKey: "lastVoiceKey")
         }
@@ -105,11 +121,12 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
 
     public override func cancelSpeechRequest() {
         marks.withLock { $0 = (nil, []) }
-        VoiceEngine.shared.cancel()
+        if macinTalkMode.withLock({ $0 }) { macinTalk.cancel() }
+        else { VoiceEngine.shared.cancel() }
     }
 
     public override var internalRenderBlock: AUInternalRenderBlock {
-        let stream = VoiceEngine.shared.stream
+        let macinTalk = self.macinTalk, macinTalkMode = self.macinTalkMode
         let renderLog = self.renderLog, renderCount = self.renderCount
         let marks = self.marks
         return { [weak self] actionFlags, _, frameCount, _, outputData, _, _ in
@@ -119,7 +136,12 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
             let frames = Int(frameCount)
             var done: Int32 = 1
             var n = 0
-            if let stream {
+            let useMacinTalk = macinTalkMode.withLock { $0 }
+            let stream = useMacinTalk ? nil : VoiceEngine.shared.stream
+            if useMacinTalk {
+                let result = macinTalk.read(into: out, count: frames)
+                n = result.frames; done = result.complete ? 1 : 0
+            } else if let stream {
                 // The system pulls speech faster than real time, so silence we
                 // hand back is queued ahead of the voice. Wait (briefly) for real
                 // samples instead of padding: fill the whole request unless the
@@ -131,6 +153,16 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                     done = d
                     if n == frames || d != 0 || mach_absolute_time() > deadline { break }
                     usleep(500)
+                }
+            }
+            if useMacinTalk {
+                let (request, names) = marks.withLock { $0 }
+                if let request, let report = self?.speechSynthesisOutputMetadataBlock {
+                    let markers = macinTalk.takeMarkers().compactMap { marker in
+                        marker.id >= 0 && marker.id < names.count
+                            ? AVSpeechSynthesisMarker(bookmarkName: names[marker.id], atByteSampleOffset: marker.frame * 4) : nil
+                    }
+                    if !markers.isEmpty { report(markers, request) }
                 }
             }
             if let stream {

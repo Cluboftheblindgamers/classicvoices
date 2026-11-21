@@ -107,6 +107,13 @@ void vxs_set_mt_24_hour(VxStream *s, int on);
 // today's Alex speaks at that rate, instead of a percent of each voice's own
 // default rate (50-400%). Off by default.
 void vxs_set_mt_modern_rate(VxStream *s, int on);
+// Snapshotted into the next submitted request; never applied to Vocalizer.
+// Defaults (0, -1) retain Classic Voices' rate curve and voice modulation.
+void vxs_set_mt_voice_options(VxStream *s, int wpm, int inflection, int phrasing, int expand_abbreviations,
+                              int volume_milli, float output_gain, int pitch_tenths);
+// Signal cancellation without waiting for the engine. A later vxs_start or
+// vxs_cancel still performs the existing serialized drain and cleanup.
+void vxs_request_cancel(VxStream *s);
 
 // Roll off the top of the band (above about 8.5 kHz) as iOS and macOS playback
 // does, from the next utterance on. Off by default: the Apple apps leave it to

@@ -98,8 +98,10 @@ final class VoiceStore: @unchecked Sendable {
     /// The speech extension's file channel, or why there's none.
     private func openChannel() throws -> Backend {
         var failure: String?
-        let desc = AudioComponentDescription(componentType: kAudioUnitType_SpeechSynthesizer, componentSubType: 0x63766F78,
-                                             componentManufacturer: 0x436C566F, componentFlags: 0, componentFlagsMask: 0)
+        let desc = AudioComponentDescription(componentType: kAudioUnitType_SpeechSynthesizer,
+                    componentSubType: BuildIdentity.fourCC("ClassicVoicesSubtype", fallback: 0x63766F78),
+                    componentManufacturer: BuildIdentity.fourCC("ClassicVoicesManufacturer", fallback: 0x436C566F),
+                    componentFlags: 0, componentFlagsMask: 0)
         let sem = DispatchSemaphore(value: 0)
         var unit: AVAudioUnit?
         AVAudioUnit.instantiate(with: desc, options: []) { u, e in

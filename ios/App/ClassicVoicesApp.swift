@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import os
 
 @main
 struct ClassicVoicesApp: App {
@@ -500,15 +501,24 @@ final class DirectPlayer: ObservableObject {
     @Published var stats = ""
     private let engine = AVAudioEngine()
     private var source: AVAudioSourceNode?
+    private let macinTalk = MacinTalkProvider()
+    private let macinTalkMode = OSAllocatedUnfairLock(initialState: false)
+    private let statsRevision = OSAllocatedUnfairLock(initialState: UInt64(0))
 
     init() {
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 22050, channels: 1, interleaved: false)!
         let stream = VoiceEngine.shared.stream
+        let macinTalk = self.macinTalk, macinTalkMode = self.macinTalkMode
         let node = AVAudioSourceNode(format: format) { _, _, frameCount, data in
             let buffers = UnsafeMutableAudioBufferListPointer(data)
             let out = buffers[0].mData!.assumingMemoryBound(to: Float.self)
             var done: Int32 = 0
-            let n = stream.map { vxs_read($0, out, Int(frameCount), &done) } ?? 0
+            let n: Int
+            if macinTalkMode.withLock({ $0 }) {
+                // This is a hardware callback, unlike the system's offline
+                // speech renderer: never wait for synthesis here.
+                n = macinTalk.read(into: out, count: Int(frameCount), wait: 0).frames
+            } else { n = stream.map { vxs_read($0, out, Int(frameCount), &done) } ?? 0 }
             if n < Int(frameCount) { (out + n).update(repeating: 0, count: Int(frameCount) - n) }
             return noErr
         }
@@ -519,12 +529,14 @@ final class DirectPlayer: ObservableObject {
 
     func speak(_ text: String, voiceKey: String, rate: Int, rules: PronunciationRules? = nil, rulesPack: String? = nil,
                settings: SpeechSettings = SpeechSettings()) {
+        let revision = statsRevision.withLock { $0 &+= 1; return $0 }
         #if !os(macOS)
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
         if !readableHere(voiceKey), let entry = VoiceCatalog.entries.first(where: { $0.key == voiceKey }),
            let voice = VoiceCatalog.systemVoice(for: entry) {
+            macinTalk.cancel()
             // Downloaded into the speech extension's own store, which the app
             // can't read: the system speaks it through the extension, as
             // VoiceOver does (with the extension's rules and settings).
@@ -538,12 +550,29 @@ final class DirectPlayer: ObservableObject {
         }
         if !engine.isRunning { try? engine.start() }
         var job = SpeechJob()
-        job.text = rules?.apply(text) ?? text
-        job.rate = rate
+        let escaped = text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        let entry = VoiceCatalog.entry(forKey: voiceKey)
+        let language = entry?.language ?? "en-US"
+        let dictionary = CommunityDictionary.forVoice(key: voiceKey, language: language,
+                                                     community: settings.communityDictionaries)
+        job = SpeechJob.from(ssml: "<speak><prosody rate='\(rate)%'>\(escaped)</prosody></speak>",
+                             rules: rules, dictionary: dictionary, exactPitch: voiceKey.hasPrefix("mt"),
+                             phonemes: { VoiceEngine.phonemeText(key: voiceKey, language: language, ipa: $0, joined: $1) },
+                             voiceKey: voiceKey, settings: settings)
+        if voiceKey.hasPrefix("mt") {
+            let wasMacinTalk = macinTalkMode.withLock { let old = $0; $0 = true; return old }
+            if !wasMacinTalk { VoiceEngine.shared.requestCancel() }
+            macinTalk.submit(job, voiceKey: voiceKey, settings: settings)
+            reportMacinTalkStats(revision: revision)
+            return
+        }
+        macinTalkMode.withLock { $0 = false }
+        macinTalk.cancel()
         VoiceEngine.shared.speak(job, voiceKey: voiceKey, rulesPack: rulesPack, resetCommands: settings.resetCommands,
                                  twentyFourHour: settings.twentyFourHour, modernRate: settings.modernRate,
                                  steadyPauses: settings.steadyPauses, spellingPauses: settings.spellingPauses,
-                                 spellLowercase: settings.spellLowercase)
+                                 spellLowercase: settings.spellLowercase, settings: settings)
         stats = "Speaking…"
         DispatchQueue.global().async { [weak self] in
             guard let stream = VoiceEngine.shared.stream else { return }
@@ -560,7 +589,32 @@ final class DirectPlayer: ObservableObject {
             let err = String(cString: vxs_last_error(stream))
             let text = String(format: "First audio %.0f ms · synthesized %.1f s of audio in %.0f ms (%.1f× real time)",
                               first, audio / 1000, synth, audio / max(synth, 1)) + (err.isEmpty ? "" : "\n\(err)")
-            DispatchQueue.main.async { self?.stats = text }
+            DispatchQueue.main.async {
+                guard self?.statsRevision.withLock({ $0 == revision }) == true else { return }
+                self?.stats = text
+            }
+        }
+    }
+
+    private func reportMacinTalkStats(revision: UInt64) {
+        stats = "Speaking…"
+        let provider = macinTalk
+        DispatchQueue.global().async { [weak self] in
+            for _ in 0..<600 {
+                guard self?.statsRevision.withLock({ $0 == revision }) == true else { return }
+                let metrics = provider.metrics
+                if metrics.complete || metrics.firstMs >= 0 {
+                    let text = String(format: "First audio %.0f ms · %.1f seconds prepared%@", metrics.firstMs,
+                                      Double(metrics.frames)/22050, metrics.cached ? " · cached" : "")
+                        + (metrics.error.isEmpty ? "" : "\n" + metrics.error)
+                    DispatchQueue.main.async {
+                        guard self?.statsRevision.withLock({ $0 == revision }) == true else { return }
+                        self?.stats = text
+                    }
+                    if metrics.complete { return }
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
         }
     }
 
@@ -575,7 +629,8 @@ final class DirectPlayer: ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
         if !engine.isRunning { try? engine.start() }
-        VoiceEngine.shared.cancel()
+        if voiceKey.hasPrefix("mt") { macinTalk.cancel() }
+        else { VoiceEngine.shared.cancel() }
         var job = SpeechJob()
         if let engineText {
             job.text = engineText
@@ -585,16 +640,25 @@ final class DirectPlayer: ObservableObject {
             job.text = entries.isEmpty ? (rules?.apply(plain) ?? plain)
                 : CommunityDictionary.fromText(entries).speechText(plain, rules: rules, phonemes: phonemes)
         }
+        if voiceKey.hasPrefix("mt") {
+            let wasMacinTalk = macinTalkMode.withLock { let old = $0; $0 = true; return old }
+            if !wasMacinTalk { VoiceEngine.shared.requestCancel() }
+            macinTalk.submit(job, voiceKey: voiceKey, settings: settings)
+            return
+        }
+        macinTalkMode.withLock { $0 = false }
         VoiceEngine.shared.speak(job, voiceKey: voiceKey, rulesPack: rulesPack, resetCommands: settings.resetCommands,
                                  twentyFourHour: settings.twentyFourHour, modernRate: settings.modernRate,
                                  steadyPauses: settings.steadyPauses, spellingPauses: settings.spellingPauses,
-                                 spellLowercase: settings.spellLowercase)
+                                 spellLowercase: settings.spellLowercase, settings: settings)
     }
 
     func canTryOut(_ key: String) -> Bool { readableHere(key) }
 
     func stop() {
-        VoiceEngine.shared.cancel()
+        statsRevision.withLock { $0 &+= 1 }
+        if macinTalkMode.withLock({ $0 }) { macinTalk.cancel() }
+        else { VoiceEngine.shared.cancel() }
         systemSynth.stopSpeaking(at: .immediate)
     }
 
@@ -605,6 +669,13 @@ final class DirectPlayer: ObservableObject {
         let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return true }
         var build = parts[0]
+        if build.hasPrefix("mt") {
+            let roots = [VoiceCatalog.root, VoiceCatalog.enhancedRoot].compactMap { $0 }
+            let fm = FileManager.default
+            let engine = roots.contains { fm.fileExists(atPath: $0.appendingPathComponent(build + "/MacinTalk").path) }
+            let voice = roots.contains { fm.fileExists(atPath: $0.appendingPathComponent(build + "/Voices/" + parts[1] + ".SpeechVoice/Contents/Resources/VoiceDescription").path) }
+            return engine && voice
+        }
         if build.hasPrefix("ios") && build.hasSuffix("e") {
             build.removeLast()
         } else if !build.hasPrefix("mac") && build != VoiceCatalog.siri.build {

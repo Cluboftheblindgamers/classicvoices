@@ -4,7 +4,7 @@ import Foundation
 /// for every voice and overrides per voice (by identifier). Kept as
 /// `settings.json` in the extension's store, written by the app over the
 /// store's channel and read by the extension on each request.
-struct SpeechSettings: Codable, Equatable {
+struct SpeechSettings: Codable, Equatable, Sendable {
     /// Apple's text rules (PronunciationRules): the ones the voice's own iOS
     /// release or Mac OS X voice had.
     var rules = true
@@ -38,6 +38,16 @@ struct SpeechSettings: Codable, Equatable {
     var newerRulesOverride: [String: Bool] = [:]
     var pitchFallbackOverride: [String: Bool] = [:]
     var resetCommandsOverride: [String: Bool] = [:]
+    /// Panthera behavior is confined to the four MacinTalk generations.
+    /// Vocalizer retains its existing settings and pronunciation path.
+    var macinTalkCompatibility = true
+    var macinTalk: [String: PantheraSettings] = [:]
+    var macinTalkPronunciations: [Pronunciation] = []
+    var logSpokenText = false
+
+    func macinTalkSettings(_ generation: Generation) -> PantheraSettings {
+        macinTalk[generation.rawValue] ?? PantheraSettings()
+    }
 
     static let file = "settings.json"
 
@@ -66,6 +76,10 @@ struct SpeechSettings: Codable, Equatable {
         newerRulesOverride = try c.decodeIfPresent([String: Bool].self, forKey: .newerRulesOverride) ?? [:]
         pitchFallbackOverride = try c.decodeIfPresent([String: Bool].self, forKey: .pitchFallbackOverride) ?? [:]
         resetCommandsOverride = try c.decodeIfPresent([String: Bool].self, forKey: .resetCommandsOverride) ?? [:]
+        macinTalkCompatibility = try c.decodeIfPresent(Bool.self, forKey: .macinTalkCompatibility) ?? true
+        macinTalk = try c.decodeIfPresent([String: PantheraSettings].self, forKey: .macinTalk) ?? [:]
+        macinTalkPronunciations = try c.decodeIfPresent([Pronunciation].self, forKey: .macinTalkPronunciations) ?? []
+        logSpokenText = try c.decodeIfPresent(Bool.self, forKey: .logSpokenText) ?? false
     }
 
     static func decode(_ data: Data) -> SpeechSettings? { try? JSONDecoder().decode(SpeechSettings.self, from: data) }

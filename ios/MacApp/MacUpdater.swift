@@ -30,10 +30,10 @@ final class MacUpdater {
     private(set) var ready: (version: String, app: URL)?
     private var preparing = false
 
-    static func canInstall(_ r: UpdateCheck.Release) -> Bool { r.assets[asset] != nil }
+    static func canInstall(_ r: UpdateCheck.Release) -> Bool { !BuildIdentity.isPantheraPort && r.assets[asset] != nil }
 
     static var automatic: Bool {
-        UserDefaults.standard.object(forKey: "update.automatic") as? Bool ?? true
+        !BuildIdentity.isPantheraPort && (UserDefaults.standard.object(forKey: "update.automatic") as? Bool ?? true)
     }
 
     /// Whether this copy can update itself without asking: this account can
@@ -67,6 +67,7 @@ final class MacUpdater {
 
     /// Restart Now: the downloaded version, put in place and opened.
     func installReady() {
+        guard !BuildIdentity.isPantheraPort else { return }
         guard let r = ready, !running else { return }
         running = true
         status = "Installing Classic Voices \(r.version)"
@@ -84,6 +85,7 @@ final class MacUpdater {
     /// Classic Voices is quitting: a downloaded version takes this one's place,
     /// and the system is told about its speech extension, as after an install.
     func installOnQuit() {
+        guard !BuildIdentity.isPantheraPort else { return }
         guard let r = ready, !running else { return }
         ready = nil
         let app = Bundle.main.bundleURL
@@ -97,6 +99,7 @@ final class MacUpdater {
     }
 
     func install(_ release: UpdateCheck.Release) {
+        guard !BuildIdentity.isPantheraPort else { return }
         guard !running, let a = release.assets[Self.asset] else { return }
         running = true
         error = nil

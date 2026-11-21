@@ -417,7 +417,14 @@ static void h_FSPathMakeRef(Mt *m, X86 *c) {
 }
 static void h_FSDeleteObject(Mt *m, X86 *c) { (void)m; R(c, (uint32_t)-54); }  // permErr: never delete anything
 static void h_DisposeHandle(Mt *m, X86 *c) { (void)m; (void)c; }
+uint32_t mt_cf_number(Mt *m, double value);
 static void h_CFPreferencesCopyAppValue(Mt *m, X86 *c) {
+    const char *key = A(c, 0) ? mt_cf_text(m, A(c, 0)) : NULL;
+    if (m->phrase_mode && key && !strcmp(key, "Boundaries.SilThreshold")) {
+        static const double values[] = {0, -8, -4, 0, 5};
+        R(c, mt_cf_number(m, values[m->phrase_mode]));
+        return;
+    }
     if (m->verbose) fprintf(stderr, "[cf] preference %s: not set\n", A(c, 0) ? mt_cf_text(m, A(c, 0)) : "(null)");
     R(c, 0);
 }

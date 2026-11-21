@@ -27,6 +27,11 @@ struct MtEngine {
     char voice[128];
     double base_rate, base_pitch;  // the voice's defaults (wpm, pitch units)
     double cur_rate, cur_pitch, cur_volume;
+    double base_inflection;
+    int fixed_wpm, inflection;
+    int volume_milli;
+    int fixed_pitch_tenths;
+    uint32_t property_keys[4], fixed_values[4], modulation_numbers[201];
     jmp_buf jb;
     char err[512];
     // watchdog: a call into the engine that never returns, or an engine
@@ -53,6 +58,7 @@ struct MtEngine {
 #define OS(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
 #define SO_RATE OS('r', 'a', 't', 'e')
 #define SO_PBAS OS('p', 'b', 'a', 's')
+#define SO_PMOD OS('p', 'm', 'o', 'd')
 #define SO_VOLM OS('v', 'o', 'l', 'm')
 #define SO_RSET OS('r', 's', 'e', 't')
 
@@ -150,10 +156,17 @@ double mte_sample_rate(MtEngine *e) { (void)e; return mt_audio_rate(); }
     if (setjmp((e)->jb)) { (e)->call_t0 = 0; (e)->stop_deadline = 0; snprintf((e)->err, sizeof (e)->err, "%s%s", (e)->m->err, (e)->m->main->cpu.err); return failret; }
 
 MtEngine *mte_open(const char *root, char *err, size_t errlen) {
+    return mte_open_phrasing(root, 0, err, errlen);
+}
+MtEngine *mte_open_phrasing(const char *root, int phrasing, char *err, size_t errlen) {
     MtEngine *e = calloc(1, sizeof *e);
     snprintf(e->root, sizeof e->root, "%s", root);
+    e->inflection = -1;
+    e->volume_milli = -1;
+    e->fixed_pitch_tenths = 10000;
     e->m = mt_create(err, errlen);
     if (!e->m) { free(e); return NULL; }
+    e->m->phrase_mode = phrasing >= 0 && phrasing <= 4 ? phrasing : 0;
     e->m->verbose = getenv("MT_VERBOSE") ? atoi(getenv("MT_VERBOSE")) : 0;
     e->m->fault = &e->jb;
     e->m->main->cpu.fault = &e->jb;
@@ -237,14 +250,23 @@ uint32_t mt_cf_number(Mt *m, double v);
 double mt_cf_number_value(Mt *m, uint32_t o);
 const char *mt_cf_text(Mt *m, uint32_t s);
 static const char *prop_key(uint32_t sel) {
-    return sel == SO_RATE ? "_kSpeechRateProperty" : sel == SO_PBAS ? "_kSpeechPitchBaseProperty" : "_kSpeechVolumeProperty";
+    return sel == SO_RATE ? "_kSpeechRateProperty" : sel == SO_PBAS ? "_kSpeechPitchBaseProperty"
+        : sel == SO_PMOD ? "_kSpeechPitchModProperty" : "_kSpeechVolumeProperty";
+}
+static int prop_index(uint32_t sel) {
+    return sel == SO_RATE ? 0 : sel == SO_PBAS ? 1 : sel == SO_PMOD ? 2 : 3;
+}
+static uint32_t cached_prop_key(MtEngine *e, uint32_t sel) {
+    int index = prop_index(sel);
+    if (!e->property_keys[index]) e->property_keys[index] = mt_speech_key(e->m, prop_key(sel));
+    return e->property_keys[index];
 }
 
 static double get_fixed(MtEngine *e, uint32_t sel) {
     if (e->fn_copyprop) {  // 10.7: SECopySpeechProperty(chan, key, &CFNumber)
         uint32_t out = mt_static(e->m, 4);
         wr32(&e->m->main->cpu, out, 0);
-        uint32_t a[3] = {e->chan, mt_speech_key(e->m, prop_key(sel)), out};
+        uint32_t a[3] = {e->chan, cached_prop_key(e, sel), out};
         if (call(e, e->fn_copyprop, 3, a)) return 0;
         return mt_cf_number_value(e->m, rd32(&e->m->main->cpu, out));
     }
@@ -258,11 +280,19 @@ static int set_fixed(MtEngine *e, uint32_t sel, double val) {
     if (sel == SO_RATE) e->trk_rate = val;
     if (sel == SO_PBAS) e->trk_pitch = val;
     if (e->fn_setprop) {  // 10.7: SESetSpeechProperty(chan, key, CFNumber)
-        uint32_t a[3] = {e->chan, mt_speech_key(e->m, prop_key(sel)), mt_cf_number(e->m, val)};
+        uint32_t number;
+        int integer = (int)lround(val);
+        if (sel == SO_PMOD && integer >= 0 && integer <= 200 && fabs(val - integer) < 1e-9) {
+            if (!e->modulation_numbers[integer]) e->modulation_numbers[integer] = mt_cf_number(e->m, val);
+            number = e->modulation_numbers[integer];
+        } else { number = mt_cf_number(e->m, val); }
+        uint32_t a[3] = {e->chan, cached_prop_key(e, sel), number};
         return (int)call(e, e->fn_setprop, 3, a);
     }
     if (!e->fn_setinfo) return -1;
-    uint32_t v = mt_static(e->m, 4);
+    int index = prop_index(sel);
+    if (!e->fixed_values[index]) e->fixed_values[index] = mt_static(e->m, 4);
+    uint32_t v = e->fixed_values[index];
     wr32(&e->m->main->cpu, v, (uint32_t)(int32_t)lround(val * 65536.0));
     uint32_t a[3] = {e->chan, sel, v};
     return (int)call(e, e->fn_setinfo, 3, a);
@@ -287,6 +317,14 @@ static void reset_channel(MtEngine *e) {
 void mte_set_reset_commands(MtEngine *e, int on) { e->reset_commands = on; }
 void mte_set_24_hour(MtEngine *e, int on) { e->spell_24h = on; }
 void mte_set_modern_rate(MtEngine *e, int on) { e->modern_rate = on; }
+void mte_set_voice_options(MtEngine *e, int wpm, int inflection, int expand_abbreviations,
+                          int volume_milli, int pitch_tenths) {
+    e->fixed_wpm = wpm < 0 ? 0 : wpm > 1200 ? 1200 : wpm;
+    e->inflection = inflection < 0 ? -1 : inflection > 200 ? 200 : inflection;
+    e->m->no_abbreviations = !expand_abbreviations;
+    e->volume_milli = volume_milli < 0 ? -1 : volume_milli > 2000 ? 2000 : volume_milli;
+    e->fixed_pitch_tenths = pitch_tenths >= -120 && pitch_tenths <= 120 ? pitch_tenths : 10000;
+}
 void mte_set_mark_callback(MtEngine *e, MtMarkCallback cb) { e->mark_cb = cb; }
 
 // Words per minute today's Alex (macOS 26) speaks at a rate of `pct` percent
@@ -344,6 +382,7 @@ static int use_voice(MtEngine *e, const char *voice) {
     snprintf(e->voice, sizeof e->voice, "%s", voice);
     e->base_rate = get_fixed(e, SO_RATE);
     e->base_pitch = get_fixed(e, SO_PBAS);
+    e->base_inflection = get_fixed(e, SO_PMOD);
     e->trk_rate = e->base_rate;
     e->trk_pitch = e->base_pitch;
     e->cur_rate = e->cur_pitch = e->cur_volume = -1;
@@ -409,6 +448,8 @@ static size_t convert(MtEngine *e, const char *s, const char *end, char *out, si
             } else if (!strcmp(cmd, "tn=spell")) snprintf(buf, sizeof buf, " [[char LTRL]] ");
             else if (!strcmp(cmd, "tn=normal")) snprintf(buf, sizeof buf, " [[char NORM]] ");
             else if (!strncmp(cmd, "pitch=", 6)) snprintf(buf, sizeof buf, " [[pbas %.2f]] ", pitch_base + 12.0 * log2(pitch_ratio(atoi(cmd + 6))));
+            else if (!strncmp(cmd, "pitchtenths=", 12))
+                snprintf(buf, sizeof buf, " [[pbas %.2f]] ", fmax(0, pitch_base + fmax(-120, fmin(120, atof(cmd + 12))) / 10));
             else if (!strncmp(cmd, "pitchpct=", 9) && atof(cmd + 9) > 0)  // percent of the voice's pitch (clamp_commands caps it)
                 snprintf(buf, sizeof buf, " [[pbas %.2f]] ", fmax(0, pitch_base + 12.0 * log2(atof(cmd + 9) / 100)));
             else buf[0] = 0;
@@ -742,7 +783,13 @@ int mte_speak(MtEngine *e, const char *voice, const char *utf8, int rate, int pi
     if (e->dirty && e->reset_commands) reset_channel(e);
     e->dirty = 0;
     double r = e->modern_rate ? rate_for(e, modern_target(rate)) : e->base_rate * (rate < 50 ? 50 : rate) / 100.0, pb = e->base_pitch + 12.0 * log2(pitch / 100.0);
+    if (e->fixed_wpm > 0) r = e->fixed_wpm;
+    if (e->fixed_pitch_tenths != 10000) pb = e->base_pitch + e->fixed_pitch_tenths / 10.0;
+    // Set through the real parameter API, including Lion's CF properties.
+    // Reapply after resets and typed commands; -1 must undo an earlier override.
+    set_fixed(e, SO_PMOD, e->inflection < 0 ? e->base_inflection : e->inflection);
     double vol = volume < 0 ? 1.0 : volume / 100.0;
+    if (e->volume_milli >= 0) vol = e->volume_milli / 1000.0;
     if (r != e->cur_rate) { set_fixed(e, SO_RATE, r); e->cur_rate = r; }
     if (pb != e->cur_pitch) { set_fixed(e, SO_PBAS, pb); e->cur_pitch = pb; }
     if (vol != e->cur_volume) { set_fixed(e, SO_VOLM, vol); e->cur_volume = vol; }

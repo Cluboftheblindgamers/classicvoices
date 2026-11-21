@@ -119,6 +119,12 @@ struct VxStream {
     char job_fallback[96];  // compact voice for pitch changes (see speak_segmented), or empty
     char *job_text;
     int job_rate, job_pitch, job_volume, job_pause;
+    int next_mt_wpm, next_mt_inflection, job_mt_wpm, job_mt_inflection;
+    int next_mt_phrasing, job_mt_phrasing, loaded_mt_phrasing;
+    int next_mt_abbreviations, job_mt_abbreviations;
+    int next_mt_volume_milli, job_mt_volume_milli;
+    float next_mt_output_gain, job_mt_output_gain;
+    int next_mt_pitch_tenths, job_mt_pitch_tenths;
     int job_lead;   // a pause the request starts with: ms of leading silence to keep (LEAD_WHOLE: all of it), or 0
     char preload_lang[96];
     char next_pack[1024];     // vxs_set_rules_pack: for the next vxs_start / vxs_preload
@@ -419,6 +425,9 @@ static const float kAppleTone[TONE_TAPS] = {
 
 typedef struct {
     VxStream *s;
+    float output_gain;
+    int gain_set;
+    int preserve_pcm;
     double t0;
     int got_first;   // first audible sample seen
     uint64_t frames; // frames pushed to the ring
@@ -631,6 +640,7 @@ static int ring_write(Sink *k, const float *out, size_t n) {
         for (size_t j = 0; j < chunk; j++) {
             float v = out ? out[i + j] : 0.0f;
             if (k->tone) v = tone_step(k, v);
+            if (k->gain_set) v *= k->output_gain;
             s->ring[(w + j) & (RING_FRAMES - 1)] = v;
             if (fabsf(v) < 0.003f) {
                 k->quiet_out++;
@@ -727,6 +737,17 @@ static int on_pcm(void *ctx, const int16_t *pcm, size_t n) {
     VxStream *s = k->s;
     uint32_t base = k->call_in;
     k->call_in += (uint32_t)n;
+    if (k->preserve_pcm) {
+        // Panthera uses the engine's complete waveform. Do not trim quiet
+        // consonants or alter traced pauses at either end of MacinTalk audio.
+        if (!k->got_first) for (size_t i = 0; i < n; i++) {
+            if (pcm[i] > QUIET_LEVEL || pcm[i] < -QUIET_LEVEL) {
+                k->got_first = 1; s->first_ms = now_ms() - k->t0; break;
+            }
+        }
+        if (n && k->npend) words_resolve(k, 0, base + (uint32_t)n - 1, base, 0, 0);
+        return push(k, pcm, n);
+    }
     for (size_t i = 0; i < n; i++) {
         int loud = pcm[i] > QUIET_LEVEL || pcm[i] < -QUIET_LEVEL;
         uint32_t at = base + (uint32_t)i;
@@ -1433,12 +1454,12 @@ static void mt_engine_dir(const char *root, const char *asset_root, const char *
     else snprintf(out, cap, "%s/%s", root, gen);
 }
 
-static MtEngine *mt_for(VxStream *s, const char *key) {
+static MtEngine *mt_for_mode(VxStream *s, const char *key, int phrasing) {
     const char *slash = strchr(key, '/');
     if (!slash) return NULL;
     char gen[16];
     snprintf(gen, sizeof gen, "%.*s", (int)(slash - key), key);
-    if (s->mt && !strcmp(s->mt_gen, gen) && !mte_broken(s->mt)) return s->mt;
+    if (s->mt && !strcmp(s->mt_gen, gen) && s->loaded_mt_phrasing == phrasing && !mte_broken(s->mt)) return s->mt;
     if (s->mt) { mte_close(s->mt); s->mt = NULL; s->mt_gen[0] = 0; }
     // A MacinTalk engine reserves 2 GB of address space; an audio-unit
     // extension has little to spare, so release the cached Vocalizer engines
@@ -1451,7 +1472,8 @@ static MtEngine *mt_for(VxStream *s, const char *key) {
     extern void cv_mt_native_refresh(void);  // ports/apple/mt_native_dl.c: fast code built since
     cv_mt_native_refresh();
 #endif
-    s->mt = mte_open(root, s->err, sizeof s->err);
+    s->mt = mte_open_phrasing(root, phrasing, s->err, sizeof s->err);
+    s->loaded_mt_phrasing = phrasing;
     if (s->mt) {
         snprintf(s->mt_gen, sizeof s->mt_gen, "%s", gen);
         char extra[1100];  // voices copied onto the device: <asset_root>/<gen>/Voices
@@ -1461,6 +1483,7 @@ static MtEngine *mt_for(VxStream *s, const char *key) {
     else os_log_error(OS_LOG_DEFAULT, "CLASSICVOICES MacinTalk %{public}s: %{public}s", gen, s->err);
     return s->mt;
 }
+static MtEngine *mt_for(VxStream *s, const char *key) { return mt_for_mode(s, key, 0); }
 
 // A MacinTalk bookmark, reported between the pieces of text around it: it is
 // reached where the audio is now.
@@ -1650,18 +1673,28 @@ static void *worker(void *arg) {
         snprintf(s->cur_pack, sizeof s->cur_pack, "%s", s->job_pack);
         char *text = s->job_text;
         int rate = s->job_rate, pitch = s->job_pitch, volume = s->job_volume, pause = s->job_pause, lead = s->job_lead;
+        int mt_wpm = s->job_mt_wpm, mt_inflection = s->job_mt_inflection;
+        int mt_phrasing = s->job_mt_phrasing, mt_abbreviations = s->job_mt_abbreviations;
+        int mt_volume_milli = s->job_mt_volume_milli;
+        float mt_output_gain = s->job_mt_output_gain;
+        int mt_pitch_tenths = s->job_mt_pitch_tenths;
         s->job_text = NULL;
         s->has_job = 0;
         pthread_mutex_unlock(&s->mu);
 
         Sink k = {.s = s, .t0 = now_ms(), .rate = OUT_RATE, .last_pos = -1, .tone = atomic_load(&s->apple_tone), .lead_ms = lead};
         if (is_mt_key(lang)) {
-            MtEngine *mt = mt_for(s, lang);
+            k.output_gain = mt_output_gain; k.gain_set = mt_output_gain != 1;
+            k.preserve_pcm = mt_wpm > 0;
+        }
+        if (is_mt_key(lang)) {
+            MtEngine *mt = mt_for_mode(s, lang, mt_phrasing);
             if (mt && !atomic_load(&s->cancel)) {
                 const char *voice = strchr(lang, '/') + 1;
                 mte_set_reset_commands(mt, !atomic_load(&s->mt_keep_commands));
                 mte_set_24_hour(mt, !atomic_load(&s->mt_12_hour));
                 mte_set_modern_rate(mt, atomic_load(&s->mt_modern_rate));
+                mte_set_voice_options(mt, mt_wpm, mt_inflection, mt_abbreviations, mt_volume_milli, mt_pitch_tenths);
                 mte_set_mark_callback(mt, mt_mark);
                 if (mte_speak(mt, voice, text, rate, pitch, volume, mt_pcm, &k) < 0 && !atomic_load(&s->cancel)) {
                     snprintf(s->err, sizeof s->err, "%s", mte_error(mt));
@@ -1763,6 +1796,11 @@ static void *worker(void *arg) {
 
 VxStream *vxs_create(const char *root) {
     VxStream *s = calloc(1, sizeof *s);
+    s->next_mt_inflection = s->job_mt_inflection = -1;
+    s->next_mt_abbreviations = s->job_mt_abbreviations = 1;
+    s->next_mt_volume_milli = s->job_mt_volume_milli = -1;
+    s->next_mt_output_gain = s->job_mt_output_gain = 1;
+    s->next_mt_pitch_tenths = s->job_mt_pitch_tenths = 10000;
     snprintf(s->root, sizeof s->root, "%s", root);
     s->ring = calloc(RING_FRAMES, sizeof(float));
     pthread_mutex_init(&s->mu, NULL);
@@ -1797,6 +1835,18 @@ void vxs_destroy(VxStream *s) {
 void vxs_set_mt_reset(VxStream *s, int on) { atomic_store(&s->mt_keep_commands, !on); }
 void vxs_set_mt_24_hour(VxStream *s, int on) { atomic_store(&s->mt_12_hour, !on); }
 void vxs_set_mt_modern_rate(VxStream *s, int on) { atomic_store(&s->mt_modern_rate, on); }
+void vxs_set_mt_voice_options(VxStream *s, int wpm, int inflection, int phrasing, int expand_abbreviations,
+                              int volume_milli, float output_gain, int pitch_tenths) {
+    pthread_mutex_lock(&s->mu);
+    s->next_mt_wpm = wpm;
+    s->next_mt_inflection = inflection;
+    s->next_mt_phrasing = phrasing >= 0 && phrasing <= 4 ? phrasing : 0;
+    s->next_mt_abbreviations = !!expand_abbreviations;
+    s->next_mt_volume_milli = volume_milli;
+    s->next_mt_output_gain = isfinite(output_gain) && output_gain >= 0 && output_gain <= 4 ? output_gain : 1;
+    s->next_mt_pitch_tenths = pitch_tenths;
+    pthread_mutex_unlock(&s->mu);
+}
 void vxs_set_apple_tone(VxStream *s, int on) { atomic_store(&s->apple_tone, on ? 1 : 0); }
 void vxs_set_steady_pauses(VxStream *s, int on) { atomic_store(&s->pauses_shorten, !on); }
 void vxs_set_spelling_pauses(VxStream *s, int on) { atomic_store(&s->spelling_pauses, on ? 1 : 0); }
@@ -1819,8 +1869,7 @@ char *vxs_text_xsampa(VxStream *s, const char *voice_key, const char *language, 
     return ok && n ? vx_lhp_to_xsampa(sym, language) : NULL;
 }
 
-void vxs_cancel(VxStream *s) {
-    pthread_mutex_lock(&s->mu);
+static void request_cancel_locked(VxStream *s) {
     atomic_store(&s->cancel, 1);
     // Enhanced voices can search for their units for a few hundred ms without
     // producing audio, where a stop would otherwise wait: the engine's own
@@ -1833,6 +1882,15 @@ void vxs_cancel(VxStream *s) {
         atomic_store(&s->producing, 0);
         wake_readers(s);
     }
+}
+void vxs_request_cancel(VxStream *s) {
+    pthread_mutex_lock(&s->mu);
+    request_cancel_locked(s);
+    pthread_mutex_unlock(&s->mu);
+}
+void vxs_cancel(VxStream *s) {
+    pthread_mutex_lock(&s->mu);
+    request_cancel_locked(s);
     while (atomic_load(&s->producing)) pthread_cond_wait(&s->cv, &s->mu);
     atomic_store(&s->read_pos, atomic_load(&s->write_pos));  // drop unplayed audio
     atomic_store(&s->cancel, 0);
@@ -2000,6 +2058,14 @@ void vxs_start_with_fallback(VxStream *s, const char *lang, const char *fallback
     vxs_cancel(s);
     pthread_mutex_lock(&s->mu);
     snprintf(s->job_lang, sizeof s->job_lang, "%s", lang);
+    s->err[0] = 0;
+    s->job_mt_wpm = s->next_mt_wpm;
+    s->job_mt_inflection = s->next_mt_inflection;
+    s->job_mt_phrasing = s->next_mt_phrasing;
+    s->job_mt_abbreviations = s->next_mt_abbreviations;
+    s->job_mt_volume_milli = s->next_mt_volume_milli;
+    s->job_mt_output_gain = s->next_mt_output_gain;
+    s->job_mt_pitch_tenths = s->next_mt_pitch_tenths;
     snprintf(s->job_fallback, sizeof s->job_fallback, "%s", fallback_key && !is_mt_key(lang) ? fallback_key : "");
     snprintf(s->job_pack, sizeof s->job_pack, "%s", is_mt_key(lang) ? "" : s->next_pack);
     if (is_mt_key(lang)) {

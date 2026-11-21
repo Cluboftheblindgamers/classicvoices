@@ -16,6 +16,7 @@ typedef int (*MtPcmCallback)(void *ctx, const float *pcm, size_t n);
 //   lib/                           libc++abi.dylib / libstdc++.*.dylib as the generation needs
 //   Voices/<Name>.SpeechVoice/     the voices
 MtEngine *mte_open(const char *root, char *err, size_t errlen);
+MtEngine *mte_open_phrasing(const char *root, int phrasing, char *err, size_t errlen);
 // A second place to look for <Name>.SpeechVoice folders (voices copied onto
 // the device separately, e.g. Alex). Optional.
 void mte_set_extra_voices(MtEngine *e, const char *dir);
@@ -29,6 +30,15 @@ void mte_set_reset_commands(MtEngine *e, int on);
 void mte_set_24_hour(MtEngine *e, int on);
 // Rate as today's Alex maps it (see mte_speak). Off by default.
 void mte_set_modern_rate(MtEngine *e, int on);
+// Panthera-compatible controls. wpm=0 preserves the existing rate curve;
+// inflection=-1 restores the selected voice's own modulation.
+// pitch_tenths=10000 retains the old percentage-pitch interface.
+void mte_set_voice_options(MtEngine *e, int wpm, int inflection, int expand_abbreviations,
+                          int volume_milli, int pitch_tenths);
+int mte_volume_milli(int level, const char *generation, const char *voice);
+// malloc'd UTF-8 output, free by the caller. Styles: 0 original, 1 fixes, 2 words.
+char *mte_rewrite_numbers(const char *text, int style);
+int mte_numbers_check(void);
 
 // Bookmarks: ESC\mrk=N\ in mte_speak's text ends an utterance there, and
 // cb gets mte_speak's ctx and N once the text before it is spoken (MacinTalk

@@ -109,6 +109,8 @@ final class UpdateCheck {
     }
 
     func check() async {
+        // A fork must not silently replace its port with an upstream release.
+        if BuildIdentity.isPantheraPort { available = nil; return }
         let defaults = UserDefaults.standard
         // For testing an update: `-updateFeed http://127.0.0.1:8765/releases.json`
         // asks there instead, every launch.

@@ -167,6 +167,7 @@ static void h_vmul(Mt *m, X86 *c) {  // vmul(A,IA,B,IB,C,IC,N): C = A*B
 
 #define MAX_RE 256
 static regex_t *g_re[MAX_RE];
+static int g_re_abbreviation[MAX_RE];
 static pthread_mutex_t g_re_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void h_regcomp(Mt *m, X86 *c) {
@@ -176,7 +177,14 @@ static void h_regcomp(Mt *m, X86 *c) {
     pthread_mutex_lock(&g_re_mu);
     int i;
     for (i = 1; i < MAX_RE && g_re[i]; i++) {}
-    if (i < MAX_RE) g_re[i] = re;
+    if (i < MAX_RE) {
+        g_re[i] = re;
+        const char *pattern = mt_str(m, A(c, 1));
+        static const char *marks[] = {"(,[[:digit:]]{3})*", "(K|M|G|T|P)B", "JAN", "ISH", "&"};
+        g_re_abbreviation[i] = 0;
+        for (size_t k = 0; k < sizeof marks / sizeof *marks; k++)
+            if (strstr(pattern, marks[k])) g_re_abbreviation[i] = 1;
+    }
     pthread_mutex_unlock(&g_re_mu);
     if (i == MAX_RE) { regfree(re); free(re); R(c, REG_ESPACE); return; }
     uint32_t g = A(c, 0);
@@ -192,7 +200,8 @@ static void h_regexec(Mt *m, X86 *c) {
     if (rd32(c, g) != 0x52454758u || i >= MAX_RE || !g_re[i]) { R(c, REG_BADPAT); return; }
     regmatch_t mt[32];
     if (n > 32) n = 32;
-    int rc = regexec(g_re[i], mt_str(m, A(c, 1)), n, n ? mt : NULL, (int)A(c, 4));
+    int rc = m->no_abbreviations && g_re_abbreviation[i] ? REG_NOMATCH
+        : regexec(g_re[i], mt_str(m, A(c, 1)), n, n ? mt : NULL, (int)A(c, 4));
     if (!rc && out)
         for (uint32_t k = 0; k < n; k++) { wr64(c, out + 16 * k, (uint64_t)(int64_t)mt[k].rm_so); wr64(c, out + 16 * k + 8, (uint64_t)(int64_t)mt[k].rm_eo); }
     R(c, (uint32_t)rc);

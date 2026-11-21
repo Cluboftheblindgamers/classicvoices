@@ -2706,3 +2706,90 @@ there, and 0.4.0's still load (ABI 1), so an update kept the old, slower code
   built). Tested on cv33 with real TalkBack against a Python mock GitHub (sign-in with a dropped poll, fork path,
   409 retry, 401 refresh, tidy after publishing); not tested against the real GitHub, with TalkBack's gesture
   actions menu, the daily publish, Android 5, 32-bit ABIs at run time, or by ear (the emulator has no audio).
+
+
+## 2026-11-21 — Panthera compatibility port (local, not release-ready)
+
+Base: Classic Voices dev commit 6e1e68b411eb0d3322a2124bddca3c7ee3302703.
+Branch: panthera-parity. Mac and iOS are the initial targets. Existing Panthera
+installation, preferences and selected VoiceOver voice were not replaced.
+PANTHERA-PARITY.json is the feature-by-feature acceptance inventory.
+
+Implemented:
+- Panthera text rules (receipt read/red, minute/duration, symbols, Unicode,
+  dates, capitals and expensive identifier spacing), per-generation settings,
+  scoped pronunciation entries, settings import/export, calibrated volume,
+  fixed WPM, inflection default 100, and exact pitch offsets in tenths.
+- Common VoiceOver SSML follows Panthera's traced comma/pause/letter path.
+  Classic bookmarks, IPA, language/sentence tags and nested prosody use its
+  existing richer parser with text/settings integration. Rich requests do not
+  yet have full Panthera phrasing parity. Vocalizer retains its existing path.
+- MacinTalk preview and speech extension share a serial engine producer,
+  separate cache producer, token-protected eight-second PCM queue and bounded
+  90-second Float audio LRU (ten-second maximum entry). No aborted/errored or
+  bookmarked request enters the cache. All settings and voice-data revision
+  participate in the cache key. Error state is cleared on new engine requests.
+- Settings UI exposes generation controls and scoped pronunciation editing;
+  specific voices start empty. Legacy overlapping Classic MT controls are
+  disabled while Panthera behavior is enabled. Upstream auto-update is disabled
+  for this modified branch to avoid replacing the local modifications.
+- Isolated Mac trial packaging uses its own bundle/component/group/voice IDs.
+  Native code and Apple data in that local trial must never be published.
+
+Validation, final source as of this entry:
+- Mac Release app and extension: BUILD SUCCEEDED.
+- iOS arm64 Release app and extension: BUILD SUCCEEDED, unsigned compile-only,
+  VX_NO_STATIC_NATIVE=1, firmware packaging disabled. This is not a usable IPA
+  or proof of device behavior; Vocalizer generated code was not included.
+- tools/check_panthera_port.py: original maintenance/text and pronunciation
+  scope corpora, 46 integration checks, number self-check, queue/cache budget,
+  stale completion/cancellation/supersession checks all pass.
+- Native Snow Leopard real provider: exact cached PCM, cached speech while the
+  previous request cancels, 20 rapid supersessions, 139 seconds of complete
+  long-reading audio, timeout followed by successful fresh speech. Last offline
+  run: first buffers 112.0 ms, cached buffers <0.1 ms, recovered 50.3 ms.
+  These are direct-provider pulls, not end-to-end VoiceOver measurements.
+- C render checks: Tiger Fred, Leopard Alex and Lion Alex interpreted output;
+  Snow Leopard native output matches Panthera references within two 16-bit
+  sample counts at pmod 100/140. Not an all-voices/native-generations matrix.
+- Real macOS AU registration/message-channel/system-speech smoke test lists
+  two private voices and renders Alex. Writing rate through the extension's
+  channel changes output from 85,130 frames at 180 WPM to 43,658 at 360 WPM;
+  original test settings restored. No VoiceOver voice selection changed.
+- Computer Use failed with an expired continuation. No manual UI or listening
+  acceptance is claimed. All later Mac checks use the speech APIs/CLI.
+
+Reproduce local checks:
+    xcodegen generate -q --spec ios/project.yml
+    xcodebuild -project ios/ClassicVoices.xcodeproj -scheme ClassicVoicesMacPublic -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build/mac-derived ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+    python3 tools/check_panthera_port.py --voice-root extracted --native-objects ../classicvoices-latest-2026-11-21/build/mtobj106
+
+The unsigned iOS compile-only check is reproducible with
+`python3 tools/check_panthera_ios.py` (requires PyYAML and Xcode macro-plugin
+execution permissions).
+
+The native-object argument is optional. Local voice-root folders must contain
+mt104..mt107 layouts; no download or remote build is part of these tests.
+For the system smoke test, stage an isolated app with
+`tools/package_panthera_test.py`, register its extension locally, then compile
+`tests/mac_provider_smoke.swift` with swiftc and run it outside a restricted
+sandbox. The smoke test only addresses the private cvpt/PnTh component and
+restores settings even on checked failure. Logs and binaries are in build/.
+
+Remaining gates, in order:
+1. Manual Mac VoiceOver UI/focus/listening comparison, interruption/navigation,
+   normal/long text and a real >=12-minute sleep/wake recovery.
+2. A functional privately signed iOS build; test both app-group and no-group
+   settings, imports/packed voices, foreground interruption and >=12-minute
+   lock-screen recovery. No port has been installed on a phone yet.
+3. Recheck native compilation/import flows, Vocalizer speech, all four MT
+   generations/settings and repeated-request memory plateau on real hardware.
+4. Adapt the accessible Mac/Windows packer and packed-settings workflow to
+   Classic's layout/native ABI; add duplicate-copy/uninstall diagnostics.
+5. Resolve rich-SSML phrasing differences by measured comparison, then perform
+   full release packaging/privacy checks. Pathological long unbroken unknown
+   strings can still hit Classic's no-audio timeout; do not call that fixed.
+
+Do not replace the stable Panthera app or publish this branch as a completed
+migration until the acceptance inventory is satisfied. Do not push Apple data,
+generated translations, private packages, or rendered audio to GitHub.

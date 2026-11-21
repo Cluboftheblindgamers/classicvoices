@@ -95,7 +95,10 @@ targetTemplates:
         GCC_GENERATE_DEBUGGING_SYMBOLS: NO
         GCC_PREPROCESSOR_DEFINITIONS: ["$(inherited)", "VX_DYNAMIC_NATIVE=1", "VX_NO_STATIC_NATIVE=1", "VX_MT_DYNAMIC_NATIVE=1"]
   Engine:  # what every app and extension carries
-    sources: [Shared]
+    sources:
+      - Shared
+      - path: ../third_party/panthera
+        type: folder
     dependencies:
       - target: ${engine}
         link: false
