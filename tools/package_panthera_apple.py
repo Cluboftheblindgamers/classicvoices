@@ -66,6 +66,7 @@ def main():
     parser.add_argument('--settings', type=Path, help='optional Classic settings JSON or export envelope; logging forced off')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--require-vocalizer',action='store_true',help='refuse a package missing any standard Vocalizer engine or compact voice set')
     parser.add_argument('--build-number',type=int,help='defaults to source commit count; advances the AU cache version')
     args = parser.parse_args()
     output = args.output.resolve()
@@ -119,6 +120,16 @@ def main():
         if settings.get('format')=='classicvoices-panthera-settings': settings=settings['settings']
         settings['logSpokenText']=False
         (voices/'settings.json').write_text(json.dumps(settings))
+    if args.require_vocalizer:
+        builds=['ios3','ios4','ios5','ios6','ios70','ios7','ios10']
+        missing=[build for build in builds if not (voices/build/'voiced').is_file()]
+        missing += [build+' compact voices' for build in builds[:5]
+                    if not list((voices/build/'TTSResources').glob('*/broker.hdr'))]
+        if args.platform=='mac':
+            missing += ['native '+build for build in builds
+                        if not (resources/'Native'/('cvnative_'+build+'.so')).is_file()]
+        if missing:
+            raise SystemExit('Incomplete Vocalizer package: '+', '.join(missing))
     for bundle in [extension,app]: configure_bundle(bundle,args.platform,bundle==extension,args.build_number)
     # Release build products still contain linker debug/local symbol paths.
     # Strip those from our executables before signing; runtime metadata and
