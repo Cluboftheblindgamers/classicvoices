@@ -2910,3 +2910,9 @@ Application code in the final build is source checkpoint a2ce255. Subsequent
 source-only commits add the AU version metadata fix, the expanded four-era Mac
 smoke test and validation records. No private binary/voice/native/audio output
 is pushed to the GitHub fork; those remain ignored local build artifacts.
+
+The local packaging tool now defaults CFBundleVersion to the source commit
+count (minimum9), with an explicit --build-number override for reproducing
+artifacts. AU component version advances from the same number so later source
+builds do not silently reuse the old component cache entry. The validated
+artifacts from this task use explicit build9 / AU version65545.

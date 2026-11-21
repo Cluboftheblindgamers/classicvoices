@@ -24,12 +24,16 @@ GROUP = 'group.org.pantheraspeech.ClassicVoices.Port'
 def run(args, **kwargs):
     subprocess.run([str(x) for x in args], check=True, cwd=ROOT, **kwargs)
 
-def configure_bundle(bundle, platform, extension):
+def configure_bundle(bundle, platform, extension, build_number=None):
+    if build_number is None:
+        build_number = max(9, int(subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], cwd=ROOT, text=True)))
+    if not 1 <= build_number <= 65535:
+        raise ValueError('Build number must be between 1 and 65535')
     path = bundle / ('Contents/Info.plist' if platform == 'mac' else 'Info.plist')
     info = plistlib.loads(path.read_bytes())
     suffix = ('.synthMac' if platform == 'mac' else '.ios.synth') if extension else ('.mac' if platform == 'mac' else '.ios')
     info.update(CFBundleIdentifier=PREFIX + suffix, CFBundleDisplayName='Classic Voices Panthera',
-                CFBundleName='Classic Voices Panthera', CFBundleVersion='9',
+                CFBundleName='Classic Voices Panthera', CFBundleVersion=str(build_number),
                 ClassicVoicesTestCopy='YES', ClassicVoicesAppGroup=GROUP,
                 ClassicVoicesVoicePrefix=PREFIX, ClassicVoicesSubtype='cvpt', ClassicVoicesManufacturer='PnTh')
     for key in ['DTDeveloperName', 'DTDeveloperTeamID', 'DeveloperTeamIdentifier']:
@@ -62,6 +66,7 @@ def main():
     parser.add_argument('--settings', type=Path, help='optional Classic settings JSON or export envelope; logging forced off')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--build-number',type=int,help='defaults to source commit count; advances the AU cache version')
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -114,7 +119,7 @@ def main():
         if settings.get('format')=='classicvoices-panthera-settings': settings=settings['settings']
         settings['logSpokenText']=False
         (voices/'settings.json').write_text(json.dumps(settings))
-    for bundle in [extension,app]: configure_bundle(bundle,args.platform,bundle==extension)
+    for bundle in [extension,app]: configure_bundle(bundle,args.platform,bundle==extension,args.build_number)
     # Release build products still contain linker debug/local symbol paths.
     # Strip those from our executables before signing; runtime metadata and
     # exported AU/native ABI symbols remain available.
