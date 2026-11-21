@@ -9,7 +9,7 @@ func wait(_ timeout: TimeInterval, until done: () -> Bool) -> Bool {
     return done()
 }
 var cleanup: (() -> Void)?
-func fail(_ text: String) -> Never { cleanup?(); fputs("FAIL: \(text)\n", stderr); exit(1) }
+func fail(_ text: String) -> Never { let recover = cleanup; cleanup = nil; recover?(); fputs("FAIL: \(text)\n", stderr); exit(1) }
 var loaded = false
 var audioUnit: AVAudioUnit?
 var loadError: Error?
@@ -37,16 +37,18 @@ let sentinel = Data("{\"macinTalkCompatibility\":true,\"macinTalk\":{\"snowleopa
 _ = call(["op": "write", "path": "settings.json", "data": sentinel])
 guard call(["op": "read", "path": "settings.json"])["data"] as? Data == sentinel else { restore(); fail("settings roundtrip") }
 restore()
+AVSpeechSynthesisProviderVoice.updateSpeechVoices()
+_ = wait(25, until: { AVSpeechSynthesisVoice.speechVoices().contains { $0.identifier.hasPrefix("org.pantheraspeech.classicvoices.port.") && $0.identifier.hasSuffix("mt104.Fred") } })
 let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.identifier.hasPrefix("org.pantheraspeech.classicvoices.port.") }
 print("PASS private component and settings channel; system lists \(voices.count) private voices")
 guard let voice = voices.first(where: { $0.identifier.hasSuffix("mt106.Alex") }) else { fail("private Alex not registered: \(voices.map(\.identifier))") }
-func render(rate: Int) -> (frames: Int, peak: Float) {
+func render(rate: Int, using selectedVoice: AVSpeechSynthesisVoice = voice, generation: String = "snowleopard") -> (frames: Int, peak: Float) {
     let data = try! JSONSerialization.data(withJSONObject: ["macinTalkCompatibility": true,
-        "macinTalk": ["snowleopard": ["rate": rate, "inflection": 100]], "logSpokenText": false])
+        "macinTalk": [generation: ["rate": rate, "inflection": 100]], "logSpokenText": false])
     _ = call(["op": "write", "path": "settings.json", "data": data])
     let synth = AVSpeechSynthesizer()
     let utterance = AVSpeechUtterance(string: "Settings. Button. One minute nine seconds.")
-    utterance.voice = voice
+    utterance.voice = selectedVoice
     var complete = false, frames = 0
     var peak: Float = 0
     synth.write(utterance) { buffer in
@@ -62,5 +64,10 @@ func render(rate: Int) -> (frames: Int, peak: Float) {
 let normal = render(rate: 180)
 let fast = render(rate: 360)
 guard fast.frames < normal.frames * 3 / 4 else { fail("fixed rate settings ignored: normal=\(normal.frames) fast=\(fast.frames)") }
+for (generation, suffix) in [("tiger", "mt104.Fred"), ("leopard", "mt105.Alex"), ("lion", "mt107.Alex")] {
+    guard let selected = voices.first(where: { $0.identifier.hasSuffix(suffix) }) else { fail("missing private generation \(generation)") }
+    let sample = render(rate: 180, using: selected, generation: generation)
+    print("PASS system-hosted \(generation): \(sample.frames) frames, peak \(sample.peak)")
+}
 restore(); cleanup = nil
 print("PASS system-hosted private Alex and live settings: 180 WPM \(normal.frames) frames, 360 WPM \(fast.frames) frames; original settings restored")

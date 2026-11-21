@@ -1,6 +1,6 @@
 {
   "baseline": "6e1e68b411eb0d3322a2124bddca3c7ee3302703",
-  "status": "application-feature audit complete; local native Apple builds in progress; device/manual release gates remain",
+  "status": "audited application port; private native Mac app and sideloadable iOS IPA built; manual/device release gates remain",
   "sourceReference": "Panthera Speech Apple port, local maintained baseline 2026-11-21",
   "features": [
     {
@@ -15,7 +15,7 @@
       "behavior": "On-device/native compilation without redistributing Apple data",
       "verified": false,
       "implementation": "retained upstream",
-      "validation": "local Snow Leopard native provider rendered; clean on-device compilation UI not revalidated"
+      "validation": "Locally translated all four MT generations; four separate Mac native libraries packaged; static MT/Vocalizer tables verified in iOS executables. Clean end-user compilation UI not revalidated."
     },
     {
       "id": "pronunciation-text",
@@ -120,25 +120,25 @@
       "behavior": "Stable Classic voice IDs, duplicate-copy diagnostics and safe uninstall",
       "verified": false,
       "implementation": "installed catalog refresh, isolated labels and Mac management ported",
-      "validation": "Nested installs/removal regression passes; private labels identify port; cleanup targets exact extension IDs. Destructive UI acceptance remains untested"
+      "validation": "Final Mac system lists all 96 locally packaged voices; four-generation rendering and live rate changes pass. Unregistered only the superseded two-voice test copy and advanced AU component version. Stable Panthera remains registered; destructive UI acceptance untested."
     },
     {
       "id": "packer",
       "behavior": "Accessible self-contained Mac/Windows packing UI and packed settings",
       "verified": false,
       "implementation": "local Mac/Xcode app and IPA packaging added; external wizard pending",
-      "validation": "Locally generated MT libraries and data packing, optional packed settings, isolated identities and ad-hoc signing. Cross-platform Panthera wizard/Windows native ABI migration remains separate"
+      "validation": "Local Mac and iOS native packages built, deeply signed and scanned: no personal development team/profile or local home paths in executables. External cross-platform wizard/Windows native ABI migration remains separate."
     },
     {
       "id": "platforms",
       "behavior": "Mac and iOS first, preserving Classic Vocalizer behavior",
       "verified": false,
       "implementation": "Mac/iOS initial port",
-      "validation": "Mac Release app/extension build and unsigned iOS compile-only app/extension build pass; Vocalizer parser tests pass; live Vocalizer/device matrix pending"
+      "validation": "Final Mac Release app/extension and iOS arm64 app/extension build; both local packages pass deep code-sign checks and contain all four MT generations. Mac system-hosted Tiger/Fred and Leopard/SL/Lion Alex render. iOS installation and real Vocalizer/device matrix pending."
     }
   ],
   "validationDate": "2026-11-21",
-  "validationScope": "Apple Silicon Mac; iOS compile-only; local Snow Leopard native code; other MacinTalk generations interpreted render checks",
+  "validationScope": "Apple Silicon Mac: final system-hosted four-generation speech, live settings, native-provider/stress regression tests. iOS: functional local-data/native-code IPA built and signed ad hoc; installation/device behavior not yet accepted.",
   "verifiedMeaning": "True requires complete feature acceptance; passing partial checks is recorded under validation, not full parity.",
   "externalUtilities": "The original cross-platform Panthera packing wizard remains a separate migration item; local Xcode packaging is available."
 }

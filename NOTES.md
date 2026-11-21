@@ -2876,3 +2876,37 @@ Preserve exported AU/native ABI symbols and runtime metadata. Use the canonical
 ios/ project location for Mac packaging, since its FastCode source script uses
 SRCROOT-relative paths; the data-free iOS build spec remains isolated. The iOS
 extension ID is a child of the containing app ID, as installation requires.
+
+
+Final artifact validation (local, 2026-11-21):
+- Both complete Release builds succeeded. All four MT generations were locally
+  translated; Mac package has four native libraries. iOS executables contain
+  static MT104/105/106/107 and Vocalizer iOS3/4/5/6/7/10 tables. iOS7.0.6 voice
+  data was not available locally; that generation is not bundled in this IPA
+  (its zero-count table allows interpreter fallback if its data is supplied).
+- Both final app/extension signatures verify deeply/strictly. App IDs and voice
+  names identify the isolated Panthera port. Neither app executable contains
+  the local home path or an owner's signing team ID; no embedded provisioning
+  profile or personal team entitlement is carried. The IPA needs sideload
+  signing before installation and contains private locally supplied Apple data.
+- Final Mac AU smoke: system lists 96 private installed voices. System-hosted
+  Tiger Fred rendered 80,272 frames, Leopard Alex 83,338, Lion Alex 83,851;
+  Snow Leopard Alex rendered 85,130 at180WPM and43,658 at360WPM. Settings were
+  restored after the test. Stable Panthera's registration and chosen VoiceOver
+  voice were not changed. Only the superseded two-voice private trial was
+  unregistered/quit; the new private app registration takes its place.
+- macOS initially held the old private component catalog. Refresh registration
+  and updateSpeechVoices after removing the superseded private registration;
+  package AudioComponents.version now advances with CFBundleVersion. Avoid
+  reusing a component version while shipping changed AU behavior.
+- 68 integration cases plus original SSML/scope tests, storage/cancellation/
+  cache checks and real provider long-reading/error recovery pass. The optional
+  1,000-request memory stress passed as recorded above.
+- UI cleanup/uninstall was compiled but deliberately not activated in tests.
+  No final IPA was installed on a physical iOS device during this task; actual
+  sideload, VoiceOver, lock recovery and accessibility acceptance remain gates.
+
+Application code in the final build is source checkpoint a2ce255. Subsequent
+source-only commits add the AU version metadata fix, the expanded four-era Mac
+smoke test and validation records. No private binary/voice/native/audio output
+is pushed to the GitHub fork; those remain ignored local build artifacts.

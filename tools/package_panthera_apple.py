@@ -36,7 +36,8 @@ def configure_bundle(bundle, platform, extension):
         info.pop(key, None)
     if extension:
         component = info['NSExtension']['NSExtensionAttributes']['AudioComponents'][0]
-        component.update(subtype='cvpt', manufacturer='PnTh', name='Classic Voices Panthera')
+        component.update(subtype='cvpt', manufacturer='PnTh', name='Classic Voices Panthera',
+                         version=0x10000 + int(info['CFBundleVersion']))
     path.write_bytes(plistlib.dumps(info, sort_keys=False))
 
 def copy_data(source, destination, macintalk_only=False):
