@@ -15,7 +15,7 @@
       "behavior": "On-device/native compilation without redistributing Apple data",
       "verified": false,
       "implementation": "retained upstream",
-      "validation": "Locally translated all four MT generations; four separate Mac native libraries packaged; static MT/Vocalizer tables verified in iOS executables. Clean end-user compilation UI not revalidated."
+      "validation": "Mac has four MT native libraries plus seven Vocalizer native libraries. iOS app and extension have nonempty static tables for all seven Vocalizer engines, including ios70=37257 entry points. End-user compilation UI not revalidated."
     },
     {
       "id": "pronunciation-text",
@@ -134,11 +134,12 @@
       "behavior": "Mac and iOS first, preserving Classic Vocalizer behavior",
       "verified": false,
       "implementation": "Mac/iOS initial port",
-      "validation": "Final Mac Release app/extension and iOS arm64 app/extension build; both local packages pass deep code-sign checks and contain all four MT generations. Mac system-hosted Tiger/Fred and Leopard/SL/Lion Alex render. iOS installation and real Vocalizer/device matrix pending."
+      "validation": "Build10 Mac/iOS include compact Vocalizer data for iOS3/4/5/6/7.0.6, engines7.1.2/10, and four MT generations. Mac system lists270 voices and renders all four MT generations plus English iOS3/4/5/6, four sampled 7.0.6 locales. iOS native counts and signatures pass; physical-device acceptance pending."
     }
   ],
   "validationDate": "2026-11-21",
   "validationScope": "Apple Silicon Mac: final system-hosted four-generation speech, live settings, native-provider/stress regression tests. iOS: functional local-data/native-code IPA built and signed ad hoc; installation/device behavior not yet accepted.",
   "verifiedMeaning": "True requires complete feature acceptance; passing partial checks is recorded under validation, not full parity.",
-  "externalUtilities": "The original cross-platform Panthera packing wizard remains a separate migration item; local Xcode packaging is available."
+  "externalUtilities": "The original cross-platform Panthera packing wizard remains a separate migration item; local Xcode packaging is available.",
+  "packageBuild": 10
 }

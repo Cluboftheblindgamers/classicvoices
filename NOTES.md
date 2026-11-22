@@ -2916,3 +2916,37 @@ count (minimum9), with an explicit --build-number override for reproducing
 artifacts. AU component version advances from the same number so later source
 builds do not silently reuse the old component cache entry. The validated
 artifacts from this task use explicit build9 / AU version65545.
+
+
+## 2026-11-21 — Corrected Vocalizer coverage, private build10
+
+Supersedes the prior build9 limitation: fetched Apple iPhone3,1 firmware
+7.0.6/11B651, extracted VoiceServices, staged its 36 compact voice locales, and
+translated the actual ios70 engine (1,349 functions, 37,257 resume entries).
+The previous zero-count ios70 table is replaced by the real native table.
+The previous Mac artifact was MT-only; build10 includes the same Vocalizer
+sets as the IPA and seven locally compiled Mac native Vocalizer libraries.
+
+Both packages now contain iOS3/4/5/6/7.0.6 compact data, iOS7.1.2 and iOS10
+engines for additional compatible voices, and four MacinTalk generations.
+Nonempty Vocalizer table counts checked in each iOS executable and Mac library:
+ios3=15021, ios4=16790, ios5=21529, ios6=19505, ios70=37257, ios7=40827,
+ios10=32170. No placeholder or absent engine is treated as complete.
+`--require-vocalizer` packaging checks the data, compact sets and nonzero
+native tables. `check_vocalizer_native.py` correctly rejects the earlier
+build9 executable and passes build10. Generated code and data remain ignored.
+
+Engine smoke tests rendered 7.0.6 US/UK English, French and Chinese. The final
+Mac speech-service test lists270 private voices, rendered English iOS3/4/5/6,
+7.0.6 US/UK English, French and Chinese, and all four MacinTalk generations.
+Fixed-rate settings still changed SL Alex from85130 to43658 frames and were
+restored. Only the older private build9 registration was superseded; stable
+Panthera and the selected VoiceOver voice were preserved.
+
+Both Release builds succeed; deep/strict signatures, no personal team/profile,
+no local home paths in app/extension executables, and complete Vocalizer native
+counts are checked. Build10/AU65546 packages replace the Downloads build9
+archives after verification; the previous generated archives move to ignored
+build/previous-delivery. Physical iOS installation/lock recovery and other
+manual release gates remain. Source-only changes are pushed to the same fork
+branch; no voice, native translation, test audio or app archive is uploaded.

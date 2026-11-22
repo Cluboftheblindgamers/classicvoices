@@ -16,6 +16,7 @@ var loadError: Error?
 let desc = AudioComponentDescription(componentType: kAudioUnitType_SpeechSynthesizer,
     componentSubType: fourCC("cvpt"), componentManufacturer: fourCC("PnTh"),
     componentFlags: 0, componentFlagsMask: 0)
+_ = AVAudioUnitComponentManager.shared().components(matching: desc)
 AVAudioUnit.instantiate(with: desc, options: []) { unit, error in
     audioUnit = unit; loadError = error; loaded = true
 }
@@ -38,7 +39,8 @@ _ = call(["op": "write", "path": "settings.json", "data": sentinel])
 guard call(["op": "read", "path": "settings.json"])["data"] as? Data == sentinel else { restore(); fail("settings roundtrip") }
 restore()
 AVSpeechSynthesisProviderVoice.updateSpeechVoices()
-_ = wait(25, until: { AVSpeechSynthesisVoice.speechVoices().contains { $0.identifier.hasPrefix("org.pantheraspeech.classicvoices.port.") && $0.identifier.hasSuffix("mt104.Fred") } })
+let requiredVoice = CommandLine.arguments.contains("--vocalizer") ? "ios70.en-US" : "mt104.Fred"
+_ = wait(25, until: { AVSpeechSynthesisVoice.speechVoices().contains { $0.identifier.hasPrefix("org.pantheraspeech.classicvoices.port.") && $0.identifier.hasSuffix(requiredVoice) } })
 let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.identifier.hasPrefix("org.pantheraspeech.classicvoices.port.") }
 print("PASS private component and settings channel; system lists \(voices.count) private voices")
 guard let voice = voices.first(where: { $0.identifier.hasSuffix("mt106.Alex") }) else { fail("private Alex not registered: \(voices.map(\.identifier))") }
@@ -68,6 +70,13 @@ for (generation, suffix) in [("tiger", "mt104.Fred"), ("leopard", "mt105.Alex"),
     guard let selected = voices.first(where: { $0.identifier.hasSuffix(suffix) }) else { fail("missing private generation \(generation)") }
     let sample = render(rate: 180, using: selected, generation: generation)
     print("PASS system-hosted \(generation): \(sample.frames) frames, peak \(sample.peak)")
+}
+if CommandLine.arguments.contains("--vocalizer") {
+    for suffix in ["ios3.en-US", "ios4.en-US", "ios5.en-US", "ios6.en-US", "ios70.en-US", "ios70.en-GB", "ios70.fr-FR", "ios70.zh-CN"] {
+        guard let selected = voices.first(where: { $0.identifier.hasSuffix(suffix) }) else { fail("missing Vocalizer voice \(suffix)") }
+        let sample = render(rate: 180, using: selected)
+        print("PASS system-hosted Vocalizer \(suffix): \(sample.frames) frames, peak \(sample.peak)")
+    }
 }
 restore(); cleanup = nil
 print("PASS system-hosted private Alex and live settings: 180 WPM \(normal.frames) frames, 360 WPM \(fast.frames) frames; original settings restored")

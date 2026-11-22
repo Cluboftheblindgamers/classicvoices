@@ -139,6 +139,18 @@ def main():
         executable=plistlib.loads(info_path.read_bytes())['CFBundleExecutable']
         binary=bundle/('Contents/MacOS' if args.platform=='mac' else '')/executable
         run(['xcrun','strip','-S','-x',binary])
+    if args.require_vocalizer:
+        from check_vocalizer_native import executable_counts, library_counts, BUILDS
+        if args.platform=='mac':
+            counts=library_counts(resources/'Native')
+            if any(counts.get(build,0)<=0 for build in BUILDS):
+                raise SystemExit('Mac package has an empty Vocalizer native table')
+        else:
+            for bundle in [extension, app]:
+                info=plistlib.loads((bundle/'Info.plist').read_bytes())
+                counts=executable_counts(bundle/info['CFBundleExecutable'])
+                if any(counts.get(build,0)<=0 for build in BUILDS):
+                    raise SystemExit('iOS package has an empty Vocalizer native table')
     # Do not carry a provisioning profile or an old signature into a local IPA.
     for path in list(app.rglob('embedded.mobileprovision')) + list(app.rglob('embedded.provisionprofile')):
         path.unlink()
