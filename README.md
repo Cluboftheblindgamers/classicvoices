@@ -287,6 +287,12 @@ For a smaller local Mac app or IPA, pass `--omit-alex` to
 acceleration. Download Leopard, Snow Leopard or Lion Alex from their voice
 pages. Use Add from Files for Sequoia recordings.
 
+For an IPA you plan to install with Sideloadly, also pass
+`--legacy-engine-resources`. This stores the legacy Vocalizer and MacinTalk
+engine images as data so the installer signs the app and speech extension
+without trying to sign the guest engines. Keep the Synth extension enabled
+when sideloading to make the voices available to VoiceOver.
+
 ## Windows, Android and Linux
 
 On **Windows**, the Classic Voices app (in the Start menu, from

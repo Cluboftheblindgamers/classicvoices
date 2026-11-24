@@ -78,6 +78,8 @@ def main():
     parser.add_argument('--macintalk', type=Path, help='mt104..mt107 folders, copied over the voice data')
     parser.add_argument('--native', type=Path, help='Mac-only folder of locally built native .so libraries')
     parser.add_argument('--omit-alex', action='store_true', help='leave Alex recordings out of the app while keeping the engines')
+    parser.add_argument('--legacy-engine-resources', action='store_true',
+                        help='package iOS guest engines as data resources for third-party signers')
     parser.add_argument('--settings', type=Path, help='optional Classic settings JSON or export envelope; logging forced off')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--skip-build', action='store_true')
@@ -92,6 +94,8 @@ def main():
     parser.add_argument('--experimental-ios10-alex',action='store_true',help='enable the experimental ARM32 MacinTalk backend')
     args = parser.parse_args()
     if args.no_archive and args.platform != 'mac': parser.error('--no-archive is Mac-only')
+    if args.legacy_engine_resources and args.platform != 'ios':
+        parser.error('--legacy-engine-resources is iOS-only')
     import re
     if args.short_version and not re.fullmatch(r'\d+(?:\.\d+){0,2}', args.short_version):
         parser.error('Version must contain one to three numeric components')
@@ -208,6 +212,11 @@ def main():
             if not path.is_file():continue
             with path.open('rb') as f: magic=f.read(4)
             if magic not in [bytes.fromhex(x) for x in ['cafebabe','feedface','cefaedfe','feedfacf','cffaedfe']]:continue
+            if args.legacy_engine_resources and path.is_relative_to(voices):
+                # The host reads these images itself. Keep their original bytes
+                # behind the header understood by core/engine_resource.h.
+                path.write_bytes(b'CVENGINE' + path.read_bytes())
+                continue
             # Stage bare Mach-O files so codesign cannot mistake a surrounding
             # SpeechDictionary folder for an application bundle.
             copied=temporary/'binary';shutil.copyfile(path,copied)

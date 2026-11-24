@@ -1,6 +1,7 @@
 // MacinTalk host core: guest memory, heap, traps, guest calls, Mach-O loading.
 // The loader follows panthera-speech's tiger_host_macho.c (MIT, Tamas Geczy).
 #include "mt_internal.h"
+#include "../engine_resource.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -383,13 +384,22 @@ void mt_destroy(Mt *m) {
 // ---------------------------------------------------------------- loading
 
 static uint8_t *read_file(Mt *m, const char *path, size_t *len) {
-    FILE *f = fopen(path, "rb");
+    long offset;
+    FILE *f = cv_open_engine_resource(path, &offset);
     if (!f) die(m, "cannot open %s", path);
     fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    long end = ftell(f);
+    if (end < offset + 28 || fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        die(m, "invalid engine image %s", path);
+    }
+    long n = end - offset;
     uint8_t *buf = malloc((size_t)n);
-    if (!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) die(m, "cannot read %s", path);
+    if (!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) {
+        free(buf);
+        fclose(f);
+        die(m, "cannot read %s", path);
+    }
     fclose(f);
     *len = (size_t)n;
     return buf;

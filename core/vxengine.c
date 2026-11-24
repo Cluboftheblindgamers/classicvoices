@@ -1,6 +1,7 @@
 // Loader, libc HLE, and Vocalizer driver. See NOTES.md for the reverse-engineered API.
 #include "vxengine.h"
 #include "thumb.h"
+#include "engine_resource.h"
 
 #include <ctype.h>
 #include <stdatomic.h>
@@ -1209,13 +1210,19 @@ static void on_trap(Cpu *c, uint32_t addr, void *ctx);
 typedef struct { uint32_t cmd, cmdsize; } LoadCmd;
 
 static int load_macho(Vx *vx, const char *path) {
-    FILE *f = fopen(path, "rb");
+    long offset;
+    FILE *f = cv_open_engine_resource(path, &offset);
     if (!f) { snprintf(vx->err, sizeof vx->err, "cannot open %s", path); return -1; }
     fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    long end = ftell(f);
+    if (end < offset + 28 || fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        snprintf(vx->err, sizeof vx->err, "invalid engine image %s", path);
+        return -1;
+    }
+    long len = end - offset;
     uint8_t *d = malloc((size_t)len);
-    if (fread(d, 1, (size_t)len, f) != (size_t)len) { fclose(f); free(d); return -1; }
+    if (!d || fread(d, 1, (size_t)len, f) != (size_t)len) { fclose(f); free(d); return -1; }
     fclose(f);
     uint32_t magic, ncmds;
     memcpy(&magic, d, 4);

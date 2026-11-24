@@ -3,6 +3,7 @@
 #include "mt_internal.h"
 #include "mt_native.h"
 #include "mt_rates.h"
+#include "../engine_resource.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -176,7 +177,8 @@ MtEngine *mte_open_phrasing(const char *root, int phrasing, char *err, size_t er
     e->volume_milli = -1;
     e->fixed_pitch_tenths = 10000;
     char engine_path[1200]; snprintf(engine_path,sizeof engine_path,"%s/MacinTalk",root);
-    FILE *engine_file=fopen(engine_path,"rb"); uint32_t header[2]={0};
+    long engine_offset;
+    FILE *engine_file=cv_open_engine_resource(engine_path, &engine_offset); uint32_t header[2]={0};
     if (engine_file) { fread(header,1,sizeof header,engine_file); fclose(engine_file); }
     int arm32=header[0]==0xfeedfaceu && header[1]==12;
 #ifdef CV_MT_ARM32_EXPERIMENT
