@@ -674,7 +674,10 @@ static inline uint64_t neon_f32x2(uint64_t a, uint64_t b, int kind) {
         uint32_t ua = neon_ftz((uint32_t)(a >> (32 * l))), ub = neon_ftz((uint32_t)(b >> (32 * l))), uo;
         float fa, fb, fo;
         memcpy(&fa, &ua, 4); memcpy(&fb, &ub, 4);
-        fo = kind == 0 ? fa + fb : kind == 1 ? fa - fb : fa * fb;
+        if (kind <= 2) fo = kind == 0 ? fa + fb : kind == 1 ? fa - fb : fa * fb;
+        else if (fa != fa || fb != fb) { uo = 0x7FC00000u; memcpy(&fo, &uo, 4); }
+        else if (fa == 0 && fb == 0) { uo = kind == 3 ? ua | ub : ua & ub; memcpy(&fo, &uo, 4); }
+        else fo = kind == 3 ? (fa < fb ? fa : fb) : (fa > fb ? fa : fb);
         memcpy(&uo, &fo, 4);
         if (fo != fo) uo = 0x7FC00000u;
         out |= (uint64_t)neon_ftz(uo) << (32 * l);
@@ -706,7 +709,23 @@ static inline void exec_neon_dp(Core *c, uint32_t hw1, uint32_t hw2, uint32_t pc
         if (Q) c->d[(vd + 1) & 31] = a1;
         return;
     }
-    if ((hw1 & 0xEFA0) == 0xEF00 && (hw2 & 0x0F00) == 0x0D00 && !(hw1 & 0x10)) {  // VADD/VSUB/VMUL .F32
+    if ((hw1 & 0xEF80) == 0xEF00 && (hw2 & 0x0F10) == 0x0800) { // VADD/VSUB.I8/I16/I32/I64
+        unsigned vn = (((hw2 >> 7) & 1) << 4) | (hw1 & 15);
+        unsigned vm = (((hw2 >> 5) & 1) << 4) | (hw2 & 15);
+        unsigned bits = 8u << ((hw1 >> 4) & 3), subtract = (hw1 >> 12) & 1;
+        uint64_t mask = bits == 64 ? UINT64_MAX : (UINT64_C(1) << bits) - 1;
+        uint64_t result[2] = {0, 0};
+        for (unsigned r = 0; r <= Q; r++) {
+            uint64_t a = c->d[(vn + r) & 31], b = c->d[(vm + r) & 31];
+            for (unsigned shift = 0; shift < 64; shift += bits) {
+                uint64_t x = (a >> shift) & mask, y = (b >> shift) & mask;
+                result[r] |= ((subtract ? x - y : x + y) & mask) << shift;
+            }
+        }
+        for (unsigned r = 0; r <= Q; r++) c->d[(vd + r) & 31] = result[r];
+        return;
+    }
+    if ((hw1 & 0xEF80) == 0xEF00 && (hw2 & 0x0F00) == 0x0D00 && !(hw1 & 0x10)) {  // VADD/VSUB/VMUL .F32
         unsigned N = (hw2 >> 7) & 1, M = (hw2 >> 5) & 1, U = (hw1 >> 12) & 1, op = (hw1 >> 5) & 1, b4 = (hw2 >> 4) & 1;
         unsigned vn = (N << 4) | (hw1 & 15), vm = (M << 4) | (hw2 & 15);
         int kind = !U && !b4 ? (op ? 1 : 0) : (U && b4 && !op ? 2 : -1);  // 0 add, 1 sub, 2 mul
@@ -740,13 +759,49 @@ static inline void exec_neon_dp(Core *c, uint32_t hw1, uint32_t hw2, uint32_t pc
         for (unsigned r = 0; r <= Q; r++) c->d[(vd + r) & 31] = res[r];
         return;
     }
+    if ((hw1 & 0xFF90) == 0xEF00 && (hw2 & 0x0F10) == 0x0F00) { // VMIN/VMAX.F32
+        unsigned vn = (((hw2 >> 7) & 1) << 4) | (hw1 & 15);
+        unsigned vm = (((hw2 >> 5) & 1) << 4) | (hw2 & 15);
+        int kind = hw1 & 0x20 ? 3 : 4;
+        uint64_t result[2];
+        for (unsigned r = 0; r <= Q; r++) result[r] = neon_f32x2(c->d[(vn + r) & 31], c->d[(vm + r) & 31], kind);
+        for (unsigned r = 0; r <= Q; r++) c->d[(vd + r) & 31] = result[r];
+        return;
+    }
+    if ((hw1 & 0xFFBF) == 0xFFB9 && (hw2 & 0x0F10) == 0x0700) { // VABS/VNEG.F32
+        unsigned vm = (((hw2 >> 5) & 1) << 4) | (hw2 & 15);
+        uint64_t result[2];
+        for (unsigned r = 0; r <= Q; r++) {
+            uint64_t source = c->d[(vm + r) & 31];
+            result[r] = hw2 & 0x80 ? source ^ UINT64_C(0x8000000080000000) : source & UINT64_C(0x7fffffff7fffffff);
+        }
+        for (unsigned r = 0; r <= Q; r++) c->d[(vd + r) & 31] = result[r];
+        return;
+    }
     UNDEF();
 }
 
 static inline void exec_neon_ldst(Core *c, uint32_t hw1, uint32_t hw2, uint32_t pc) {
     unsigned D = (hw1 >> 6) & 1, L = (hw1 >> 5) & 1, rn = hw1 & 15, rm = hw2 & 15;
     unsigned vd = (D << 4) | (hw2 >> 12), type = (hw2 >> 8) & 15;
-    if (hw1 & 0x80) UNDEF();  // single-element forms not used
+    if (hw1 & 0x80) { // VLD1/VST1 of a single 8-, 16-, or 32-bit lane
+        unsigned size = type >> 2;
+        if ((type & 3) || size > 2) UNDEF();
+        unsigned bytes = 1u << size, bits = bytes * 8;
+        unsigned lane = (hw2 >> (5 + size)) & (7u >> size), shift = lane * bits;
+        uint64_t mask = (UINT64_C(1) << bits) - 1;
+        uint32_t a = c->r[rn];
+        if (L) {
+            uint32_t value = size == 0 ? g8(c, a) : size == 1 ? g16(c, a) : g32(c, a);
+            c->d[vd] = (c->d[vd] & ~(mask << shift)) | ((uint64_t)value << shift);
+        } else {
+            uint32_t value = (uint32_t)(c->d[vd] >> shift);
+            if (size == 0) s8(c, a, value); else if (size == 1) s16(c, a, value); else s32(c, a, value);
+        }
+        if (rm == 13) c->r[rn] += bytes;
+        else if (rm != 15) c->r[rn] += c->r[rm];
+        return;
+    }
     unsigned n;
     switch (type) {
     case 7: n = 1; break;

@@ -49,7 +49,7 @@ func profileAppGroups(_ url: URL) -> [String]? {
 enum VoiceCatalog {
     static let builds = [("ios6", "iOS 6", "6.1.6"), ("ios5", "iOS 5", "5.1.1"),
                          ("ios4", "iOS 4", "4.3.5"), ("ios3", "iOS 3", "3.1.3"),
-                         ("ios70", "iOS 7", "7.0.6")]  // iOS 7.0.6's own engine ("ios7" is 7.1.2's)
+                         ("ios70", "iOS 7", "7.0.6"), ("ios10", "iOS 10", "10.3.4")]  // iOS 7.0.6's own engine ("ios7" is 7.1.2's)
 
     /// Mac OS X releases whose Nuance voices we carry: compacts are bundled,
     /// premium voices (and the extra compacts) are downloaded.
@@ -76,9 +76,10 @@ enum VoiceCatalog {
             return "\(BuildIdentity.voicePrefix).\(tag).\(language)"
         }
         var displayName: String {
-            baseDisplayName + (BuildIdentity.isTestCopy ? " — Panthera port" : "")
+            baseDisplayName + (BuildIdentity.isTestCopy ? " — \(BuildIdentity.testLabel)" : "")
         }
         private var baseDisplayName: String {
+            if macinTalk, build == "mt107", macDir == "Alex-sequoia" { return "Alex (Sequoia recordings, Lion engine)" }
             if macinTalk { return "\(name) (\(buildName))" }
             if build == VoiceCatalog.siri.build { return "\(name) (\(buildName)\(enhanced ? " Enhanced" : ""))" }
             if macDir != nil { return "\(name) (\(buildName) \(premium ? "Premium" : "Compact"))" }
@@ -99,8 +100,14 @@ enum VoiceCatalog {
 
     /// Mac OS X MacinTalk generations (Apple's own engine, run on the x86
     /// interpreter): <root>/<gen>/{MacinTalk, SpeechDictionary, lib, Voices}.
-    static let macinTalkEras = [("mt104", "Tiger", "10.4"), ("mt105", "Leopard", "10.5"),
-                                ("mt106", "Snow Leopard", "10.6"), ("mt107", "Lion", "10.7")]
+    static let macinTalkEras: [(String,String,String)] = {
+        var eras=[("mt104", "Tiger", "10.4"), ("mt105", "Leopard", "10.5"),
+                  ("mt106", "Snow Leopard", "10.6"), ("mt107", "Lion", "10.7")]
+#if CV_IOS10_ALEX
+        eras.append(("mtios10","iOS 10","10.3.4"))
+#endif
+        return eras
+    }()
 
     /// Voices in <base>/<gen>/Voices/<Name>.SpeechVoice; the display name is
     /// the Pascal string at offset 16 of the VoiceDescription.
@@ -115,7 +122,7 @@ enum VoiceCatalog {
                 let len = Int(d[d.startIndex + 16])
                 let name = String(decoding: d[(d.startIndex + 17)..<(d.startIndex + 17 + min(len, 63))], as: UTF8.self)
                 out.append(Entry(build: gen, buildName: genName, version: version, language: "en-US",
-                                 name: name.isEmpty ? String(folder.dropLast(12)) : name,
+                                 name: gen == "mt107" && folder == "Alex-sequoia.SpeechVoice" ? "Alex (Sequoia recordings)" : gen == "mtios10" ? "Alex" : (name.isEmpty ? String(folder.dropLast(12)) : name),
                                  macDir: String(folder.dropLast(".SpeechVoice".count)), macinTalk: true))
             }
         }
@@ -159,7 +166,7 @@ enum VoiceCatalog {
     /// writes a `locale` file when the language code isn't in our table.
     static func macVoices(in base: URL) -> [Entry] {
         var out: [Entry] = []
-        for (era, eraName, version) in macEras {
+        for (era, eraName, version) in macEras + [("ios10", "iOS 10", "10.3.4")] {
             let dir = base.appendingPathComponent(era)
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
             for name in names.sorted() where name != "common" && !name.hasPrefix(".") {
@@ -244,6 +251,9 @@ enum VoiceCatalog {
     }
     /// The fast code the released Mac app builds on this Mac (cvnative_<build>.so).
     static var nativeDir: URL? {
+        #if CV_PORT_TEST
+        if let path = ProcessInfo.processInfo.environment["CV_PORT_NATIVE_DIR"] { return URL(fileURLWithPath: path) }
+        #endif
         if BuildIdentity.isTestCopy {
             let candidates = [Bundle(for: BundleMarker.self).resourceURL,
                 Bundle.main.builtInPlugInsURL?.appendingPathComponent("Synth.appex/Contents/Resources")]
@@ -615,6 +625,9 @@ struct SpeechJob: Sendable {
         parser.phonemes = phonemes
         if let voiceKey, let settings {
             parser.prepareText = { MacinTalkCompatibility.prepare($0, voiceKey: voiceKey, settings: settings, spelling: $1) }
+            if settings.macinTalkCompatibility, let generation = MacinTalkCompatibility.generation(for: voiceKey) {
+                parser.pausePercent = settings.macinTalkSettings(generation).announcementPausePercent
+            }
         }
         let xml = XMLParser(data: Data(ssml.utf8))
         xml.delegate = parser
@@ -645,6 +658,7 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
     var rules: PronunciationRules?
     var dictionary: CommunityDictionary?  // the community dictionary, applied before the rules
     var exactPitch = false
+    var pausePercent = 100
     var phonemes: ((String, Bool) -> String?)?
     // prosody currently in effect while walking the tree
     private var current = (rate: 100, pitch: 100, volume: -1)
@@ -695,7 +709,9 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
             case .phoneme(let ipa, let text):
                 let joined = out.last.map { !$0.isWhitespace && $0 != "\\" } ?? false
                 if let ph = phonemes?(ipa, joined) { out += ph } else { out += spell ? text : rules?.apply(text) ?? text }
-            case .pause(let ms): out += " \u{1b}\\pause=\(ms)\\ "
+            case .pause(let ms):
+                let scaled = SSMLRequest.scaledPause(ms, percent: pausePercent)
+                if scaled > 0 { out += " \u{1b}\\pause=\(scaled)\\ " }
             case .sentenceEnd: out += " \u{1b}\\eos=1\\ "
             case .gap: if let c = out.last, !c.isWhitespace { out += " " }
             case .pitch(let p):
@@ -710,7 +726,7 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
         }
         job.text = out.trimmingCharacters(in: .whitespacesAndNewlines)
         job.trailingPauseMs = lastText.map { tokens[($0 + 1)...].reduce(0) {
-            if case .pause(let ms) = $1 { return min($0 + ms, 60_000) }
+            if case .pause(let ms) = $1 { return min($0 + SSMLRequest.scaledPause(ms, percent: pausePercent), 60_000) }
             return $0
         } } ?? 0
     }
@@ -888,7 +904,7 @@ final class VoiceEngine {
         guard let stream else { return }
         let generation = MacinTalkCompatibility.generation(for: voiceKey)
         let profile = settings.flatMap { value in
-            value.macinTalkCompatibility ? generation.map { value.macinTalkSettings($0) } : nil
+            value.macinTalkCompatibility ? generation.map { value.macinTalkSettings($0, voiceKey: voiceKey) } : nil
         }
         let phraseModes: [PantheraSettings.Phrasing: Int32] = [.leopard: 0, .fewest: 1, .fewer: 2, .more: 3, .most: 4]
         let phrasing = generation?.supportsPhrasing == true ? phraseModes[profile?.phrasing ?? .leopard] ?? 0 : 0

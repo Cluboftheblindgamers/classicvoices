@@ -2,6 +2,9 @@
 #pragma once
 #include "mt.h"
 #include <pthread.h>
+#ifdef CV_MT_ARM32_EXPERIMENT
+#include "../thumb.h"
+#endif
 
 #define MT_TLS_KEYS 64
 
@@ -14,7 +17,17 @@ typedef struct MtThread {
     uint32_t keys[MT_TLS_KEYS];
     uint32_t stack_top;
     jmp_buf fault;
+#ifdef CV_MT_ARM32_EXPERIMENT
+    // Opt-in command-line experiment; never enabled in the app targets.
+    Cpu arm;
+#endif
 } MtThread;
+
+#ifdef CV_MT_ARM32_EXPERIMENT
+void mt_arm32_thread_init(MtThread *t);
+uint32_t mt_arm32_call(Mt *m, X86 *c, uint32_t fn, int nargs, const uint32_t *args);
+void mt_arm32_reset(Mt *m);
+#endif
 
 static inline MtThread *mt_tls(Mt *m, X86 *c) { (void)m; return (MtThread *)c; }
 

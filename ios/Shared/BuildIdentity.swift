@@ -15,7 +15,7 @@ enum BuildIdentity {
         var values: [String: String] = [:]
         for bundle in bundles {
             for key in ["ClassicVoicesTestCopy", "ClassicVoicesVoicePrefix", "ClassicVoicesSubtype",
-                        "ClassicVoicesManufacturer", "ClassicVoicesAppGroup"] where values[key] == nil {
+                        "ClassicVoicesManufacturer", "ClassicVoicesAppGroup", "ClassicVoicesTestLabel"] where values[key] == nil {
                 if let value = bundle.object(forInfoDictionaryKey: key) as? String, !value.isEmpty { values[key] = value }
             }
         }
@@ -24,6 +24,7 @@ enum BuildIdentity {
     static func value(_ key: String) -> String? {
         configuration[key]
     }
+    static var testLabel: String { value("ClassicVoicesTestLabel") ?? "Panthera port" }
     static var isTestCopy: Bool { value("ClassicVoicesTestCopy") == "YES" }
     static var voicePrefix: String { value("ClassicVoicesVoicePrefix") ?? "com.levigobin.ClassicVoices" }
     static func fourCC(_ key: String, fallback: UInt32) -> UInt32 {

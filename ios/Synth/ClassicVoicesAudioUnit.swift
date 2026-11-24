@@ -82,6 +82,9 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
         renderCount.pointee = 0
         requestStart.pointee = mach_absolute_time()
         let entry = VoiceCatalog.entry(forIdentifier: request.voice.identifier)
+        if entry == nil {
+            log.error("CLASSICVOICES voice lookup failed: asked=\(request.voice.identifier, privacy: .public) prefix=\(BuildIdentity.voicePrefix, privacy: .public) catalog=\(VoiceCatalog.entries.map(\.identifier).joined(separator: ","), privacy: .public)")
+        }
         let key = entry?.key ?? "ios6/" + (request.voice.primaryLanguages.first ?? "en-US")
         let settings = SpeechSettings.current
         let language = entry?.language ?? request.voice.primaryLanguages.first ?? ""
@@ -110,7 +113,7 @@ public final class ClassicVoicesAudioUnit: AVSpeechSynthesisProviderAudioUnit {
                                  spellLowercase: settings.spellLowercase, settings: settings)
         }
         dumpRenderLog(start: previous.0, count: previous.1, renders: previous.2)
-        log.notice("CLASSICVOICES request \(key, privacy: .public) rate=\(job.rate) pitch=\(job.pitch) pause=\(job.trailingPauseMs)")
+        log.notice("CLASSICVOICES request \(key, privacy: .public) rate=\(job.rate) wpm=\(job.macinTalkWPM ?? 0) pitch=\(job.pitch) pause=\(job.trailingPauseMs)")
         if settings.logSpokenText {
             log.notice("CLASSICVOICES spoken text=[\(job.text.replacingOccurrences(of: "\u{1b}", with: "<ESC>"), privacy: .public)] ssml=\(request.ssmlRepresentation, privacy: .public)")
         }

@@ -13,6 +13,9 @@ enum MacinTalkCompatibility {
         case "mt105": return .leopard
         case "mt106": return .snowleopard
         case "mt107": return .lion
+#if CV_IOS10_ALEX
+        case "mtios10": return .ios10Alex
+#endif
         default: return nil
         }
     }
@@ -43,6 +46,7 @@ enum MacinTalkCompatibility {
         if style != 0, let rewritten = mte_rewrite_numbers(prepared, style) {
             numbered = String(cString: rewritten); free(rewritten)
         } else { numbered = prepared }
+        if generation.preservesUnicode { return numbered }
         let bytes = MacRoman.encode(numbered).dropLast().map { UInt8(bitPattern: $0) }
         return String(bytes: bytes, encoding: .macOSRoman) ?? numbered
     }
@@ -58,7 +62,8 @@ enum MacinTalkCompatibility {
         let wpm = profile.wpm(requestMultiplier: request.rateMultiplier)
         let pieces = request.pieces(natural: profile.naturalPauses, wpm: wpm,
                                     clauses: profile.quickInterrupt, macVoiceOver: true,
-                                    macPauses: profile.macPauses, style: .of(generation))
+                                    macPauses: profile.macPauses, style: .of(generation),
+                                    pausePercent: profile.announcementPausePercent)
         var job = SpeechJob()
         let multiplier = request.rateMultiplier.isFinite ? min(100, max(0.01, request.rateMultiplier)) : 1
         job.rate = Int((multiplier * 100).rounded())
@@ -80,10 +85,30 @@ enum MacinTalkCompatibility {
             if index < pieces.count - 1 {
                 if piece.pauseAfterMs > 0 { text += " \u{1b}\\pause=\(piece.pauseAfterMs)\\ " }
                 text += " \u{1b}\\eos=1\\ "
-            } // Panthera omits a final trailing break, keeping navigation responsive.
+            } // Final navigation prosody is handled below, inside the utterance.
         }
         job.text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if request.pauseOnlyMs > 0 { job.trailingPauseMs = request.pauseOnlyMs }
+        // Native Snow Leopard and Mavericks VoiceOver send Dock[[slnc 500]].
+        // The same final-pause path is also enabled for Tiger and Leopard.
+        // Giving the break to the engine shapes the word
+        // differently from bare Dock; appending host silence cannot reproduce it.
+        // This is cancellable PCM, not a delay before accepting another request.
+        var engineFinalPause = generation == .lion || generation == .snowleopard
+            || generation == .leopard || generation == .tiger
+#if CV_IOS10_ALEX
+        // Opt-in preview: test the same native word-ending treatment without
+        // changing iOS Alex's independent pitch, modulation or rate defaults.
+        engineFinalPause = engineFinalPause || generation == .ios10Alex
+#endif
+        let finalPause = SSMLRequest.scaledPause(min(request.requestedTrailingPauseMs, 1000), percent: profile.announcementPausePercent)
+        if engineFinalPause, profile.macPauses, finalPause > 0,
+           !job.text.isEmpty {
+            job.text += "[[slnc \(finalPause)]] "
+        }
+        if !engineFinalPause, SSMLRequest.VoiceOverStyle.of(generation).preserveRequestedPauses && profile.macPauses {
+            job.trailingPauseMs = SSMLRequest.scaledPause(request.requestedTrailingPauseMs, percent: profile.announcementPausePercent)
+        }
+        if request.pauseOnlyMs > 0 { job.trailingPauseMs = SSMLRequest.scaledPause(request.pauseOnlyMs, percent: profile.announcementPausePercent) }
         return job
     }
 

@@ -13,6 +13,32 @@ import Foundation
 /// lib, Voices}. Which Mac OS X a MacinTalk came from is read from the
 /// processors it was built for.
 enum SpeechDataImport {
+    /// A separate destination prevents replacing original Lion Alex.
+    static func installSequoiaAlex(_ url: URL) throws -> String {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        guard VoiceCatalog.hasMacinTalkEngine("mt107") else {
+            throw ImportError("Add Lion's MacinTalk engine before importing Sequoia Alex recordings.")
+        }
+        let found = scan([url])
+        guard found.voices.count == 1, let voice = found.voices.first else {
+            throw ImportError("Choose the Alex.SpeechVoice folder copied from your Sequoia installation.")
+        }
+        let resources = voice.appendingPathComponent("Contents/Resources")
+        guard let description = try? Data(contentsOf: resources.appendingPathComponent("VoiceDescription")), description.count > 80 else {
+            throw ImportError("This folder is missing Alex's VoiceDescription file.")
+        }
+        let length = min(Int(description[16]), 63)
+        let name = String(decoding: description[17..<(17 + length)], as: UTF8.self)
+        let size = ((try? FileManager.default.attributesOfItem(atPath: resources.appendingPathComponent("PCMWave").path)[.size]) as? NSNumber)?.int64Value ?? 0
+        guard name.localizedCaseInsensitiveContains("Alex"), size > 600_000_000 else {
+            throw ImportError("Choose the complete newer Alex voice bundle, including its PCMWave recordings. Original Lion Alex should be imported with Choose Files or Folders instead.")
+        }
+        try VoiceStore.shared.install(voice.resolvingSymlinksInPath(), at: "mt107/Voices/Alex-sequoia.SpeechVoice")
+        try VoiceStore.shared.reloadEngines()
+        return "Added Alex (Sequoia recordings, Lion engine). Original Lion Alex is unchanged. Sequoia Alex uses Lion settings with its own inflection, default 140."
+    }
+
     /// What a pick turned up.
     struct Found {
         var engine: URL?            // .../MacinTalk.SpeechSynthesizer/Contents/MacOS/MacinTalk
@@ -60,7 +86,8 @@ enum SpeechDataImport {
     }
 
     static func releaseName(_ gen: String) -> String {
-        VoiceCatalog.macinTalkEras.first { $0.0 == gen }.map { "Mac OS X \($0.2) \($0.1)" } ?? gen
+        if gen == "mtios10" { return "iOS 10.3.4 Alex" }
+        return VoiceCatalog.macinTalkEras.first { $0.0 == gen }.map { "Mac OS X \($0.2) \($0.1)" } ?? gen
     }
 
     // MARK: - looking

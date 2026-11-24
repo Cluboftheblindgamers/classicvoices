@@ -62,7 +62,21 @@ struct MacinTalkSettingsView: View {
                         Slider(value: Binding(get: { Double(profile.inflection) },
                                               set: { binding(\.inflection).wrappedValue = Int($0) }), in: 0...200, step: 1)
                             .accessibilityLabel("Inflection")
-                            .accessibilityValue("\(profile.inflection), VoiceOver default 100")
+                            .accessibilityValue("\(profile.inflection), default \(generation.defaultInflection)")
+                    }
+                    if generation == .lion, library.items.contains(where: { $0.entry?.key == "mt107/Alex-sequoia" }) {
+                        Section("Sequoia Alex recordings") {
+                            LabeledContent("Sequoia Alex inflection", value: "\(library.settings.macinTalkSettings(.lion, voiceKey: "mt107/Alex-sequoia").inflection)")
+                            Slider(value: Binding(get: {
+                                Double(library.settings.macinTalkSettings(.lion, voiceKey: "mt107/Alex-sequoia").inflection)
+                            }, set: { value in
+                                library.updateSettings { $0.macinTalkInflectionOverride["mt107/Alex-sequoia"] = Int(value) }
+                            }), in: 0...200, step: 1)
+                            .accessibilityLabel("Sequoia Alex inflection")
+                            .accessibilityValue("\(library.settings.macinTalkSettings(.lion, voiceKey: "mt107/Alex-sequoia").inflection), default 140")
+                            Text("Uses Lion's other settings. Original Lion Alex keeps the inflection set above.")
+                                .font(.footnote)
+                        }
                     }
                     Section("Pronunciation") {
                         Picker("Number reading", selection: binding(\.numbers)) {
@@ -91,6 +105,14 @@ struct MacinTalkSettingsView: View {
                         }
                         Toggle("Natural pauses between announcement parts", isOn: binding(\.naturalPauses))
                         Toggle("Classic VoiceOver commas and pauses", isOn: binding(\.macPauses))
+                        LabeledContent("Announcement pause length", value: "\(profile.announcementPausePercent) percent")
+                        Slider(value: Binding(get: { Double(profile.announcementPausePercent) },
+                                              set: { binding(\.announcementPausePercent).wrappedValue = Int($0) }), in: 0...100, step: 10)
+                            .accessibilityLabel("Announcement pause length")
+                            .accessibilityValue("\(profile.announcementPausePercent) percent of original")
+                            .accessibilityHint("Shortens announcement pauses without changing speaking rate.")
+                        Text("100 percent keeps the original timed pauses. Lower values shorten them. Engine phrase breaks also affect natural phrasing and breaths.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Toggle("Quick interruptions", isOn: binding(\.quickInterrupt))
                     } header: { Text("Phrasing") } footer: {
                         Text("Quick interruptions splits long announcements at clauses. This can change phrasing and Alex’s breaths; it is off by default.")

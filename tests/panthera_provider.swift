@@ -52,11 +52,22 @@ import Foundation
         let reading = collect(provider, limit: 30)
         precondition(reading.audio.count > 22050 * 60)
 
-        // Force the engine's no-audio timeout, then request fresh uncached speech.
+        // Difficult input must terminate and leave the engine usable. Expanded
+        // native coverage can now synthesize this input; silence is no longer
+        // a reliable way to assert that its timeout/recovery path ran.
         let pathological = String(repeating: "qzvbrntxkglpfwdcshjmaeiou", count: 45)
         provider.submit(job(pathological), voiceKey: key, settings: settings)
+        let difficult = collect(provider)
+        precondition(difficult.audio.allSatisfy(\.isFinite))
+        if provider.metrics.error.isEmpty {
+            precondition(difficult.audio.contains { abs($0) >= 0.001 })
+        }
+
+        // A missing voice is a deterministic engine error, independent of
+        // how fast the instruction coverage makes the pathological input.
+        provider.submit(job("Missing voice test."), voiceKey: "mt106/__MissingTestVoice__", settings: settings)
         let failed = collect(provider)
-        precondition(failed.audio.allSatisfy { abs($0) < 0.001 })
+        precondition(failed.audio.isEmpty && provider.metrics.error.contains("no voice"))
         provider.submit(job("Recovered, open."), voiceKey: key, settings: settings)
         let recovered = collect(provider)
         precondition(!recovered.audio.isEmpty)

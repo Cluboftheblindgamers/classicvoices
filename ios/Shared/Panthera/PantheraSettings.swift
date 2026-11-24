@@ -80,8 +80,12 @@ public struct PantheraSettings: Codable, Equatable, Sendable {
     /// VoiceOver's short pauses as a silence before the comma, as VoiceOver
     /// on Mac OS X wrote them ("Finder [[slnc 60]] , running"), at most 60 ms:
     /// iOS asks 276 ms, and the silence on top of the comma made every pause
-    /// longer (the owner, Nov 5).  Off: a comma alone.
+    /// longer (the owner, Nov 5). Snow Leopard and Lion also keep a requested final pause
+    /// inside the engine utterance, preserving its native word-ending prosody.
+    /// That audio remains interruptible. Off: the existing comma/space behavior.
     public var macPauses: Bool = true
+    /// Percentage of timed announcement pauses; 100 preserves existing delivery.
+    public var announcementPausePercent: Int = 100
 
     public static let rateFloor = 80
     public static let rateCeiling = 500
@@ -91,7 +95,13 @@ public struct PantheraSettings: Codable, Equatable, Sendable {
 
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case volume, rate, numbers, acceptCommands, resetCommands, twentyFourHour, expandAbbreviations, expandDates, capitalsAsWords, phrasing, rateBoost, naturalPauses, quickInterrupt, inflection, macPauses }
+    public static func defaults(for generation: Generation) -> PantheraSettings {
+        var settings = PantheraSettings()
+        settings.inflection = generation.defaultInflection
+        return settings
+    }
+
+    private enum CodingKeys: String, CodingKey { case volume, rate, numbers, acceptCommands, resetCommands, twentyFourHour, expandAbbreviations, expandDates, capitalsAsWords, phrasing, rateBoost, naturalPauses, quickInterrupt, inflection, macPauses, announcementPausePercent }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         volume = try values.decodeIfPresent(Int.self, forKey: .volume) ?? volume
@@ -109,6 +119,7 @@ public struct PantheraSettings: Codable, Equatable, Sendable {
         quickInterrupt = try values.decodeIfPresent(Bool.self, forKey: .quickInterrupt) ?? quickInterrupt
         inflection = try values.decodeIfPresent(Int.self, forKey: .inflection) ?? inflection
         macPauses = try values.decodeIfPresent(Bool.self, forKey: .macPauses) ?? macPauses
+        announcementPausePercent = min(100, max(0, try values.decodeIfPresent(Int.self, forKey: .announcementPausePercent) ?? 100))
         volume = min(max(volume, -1), 100)
         rate = min(max(rate, 0), rateLimit)
         inflection = min(max(inflection, 0), 200)
@@ -133,7 +144,7 @@ public struct PantheraSettings: Codable, Equatable, Sendable {
     private static func key(_ name: String, _ gen: Generation) -> String { "\(name)_\(gen.rawValue)" }
 
     public static func load(_ gen: Generation, from defaults: UserDefaults = AppGroup.defaults) -> PantheraSettings {
-        var s = PantheraSettings()
+        var s = Self.defaults(for: gen)
         func value(_ name: String) -> Any? { defaults.object(forKey: key(name, gen)) }
         if let v = value("volume") as? Int { s.volume = min(max(v, -1), 100) }
         if let v = value("rate_wpm") as? Int { s.rate = max(v, 0) }
@@ -150,6 +161,7 @@ public struct PantheraSettings: Codable, Equatable, Sendable {
         if let v = value("quick_interrupt") as? Bool { s.quickInterrupt = v }
         if let v = value("inflection") as? Int { s.inflection = min(max(v, inflectionRange.lowerBound), inflectionRange.upperBound) }
         if let v = value("mac_pauses") as? Bool { s.macPauses = v }
+        if let v = value("announcement_pause_percent") as? Int { s.announcementPausePercent = min(100, max(0, v)) }
         s.rate = min(s.rate, s.rateLimit)
         return s
     }
@@ -170,6 +182,7 @@ public struct PantheraSettings: Codable, Equatable, Sendable {
         defaults.set(quickInterrupt, forKey: Self.key("quick_interrupt", gen))
         defaults.set(inflection, forKey: Self.key("inflection", gen))
         defaults.set(macPauses, forKey: Self.key("mac_pauses", gen))
+        defaults.set(announcementPausePercent, forKey: Self.key("announcement_pause_percent", gen))
     }
 
     // MARK: - App-wide

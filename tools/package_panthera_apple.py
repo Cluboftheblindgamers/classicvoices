@@ -8,6 +8,7 @@ public host with optional locally compiled Native libraries. App and voice
 identities are separate from stable Panthera and upstream Classic Voices.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import plistlib
@@ -20,11 +21,13 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = 'org.pantheraspeech.classicvoices.port'
 GROUP = 'group.org.pantheraspeech.ClassicVoices.Port'
+APP_NAME = 'Classic Voices Panthera'
+SUBTYPE = 'cvpt'
 
 def run(args, **kwargs):
     subprocess.run([str(x) for x in args], check=True, cwd=ROOT, **kwargs)
 
-def configure_bundle(bundle, platform, extension, build_number=None):
+def configure_bundle(bundle, platform, extension, build_number=None, short_version=None):
     if build_number is None:
         build_number = max(9, int(subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], cwd=ROOT, text=True)))
     if not 1 <= build_number <= 65535:
@@ -32,46 +35,74 @@ def configure_bundle(bundle, platform, extension, build_number=None):
     path = bundle / ('Contents/Info.plist' if platform == 'mac' else 'Info.plist')
     info = plistlib.loads(path.read_bytes())
     suffix = ('.synthMac' if platform == 'mac' else '.ios.synth') if extension else ('.mac' if platform == 'mac' else '.ios')
-    info.update(CFBundleIdentifier=PREFIX + suffix, CFBundleDisplayName='Classic Voices Panthera',
-                CFBundleName='Classic Voices Panthera', CFBundleVersion=str(build_number),
+    info.update(CFBundleIdentifier=PREFIX + suffix, CFBundleDisplayName=APP_NAME,
+                CFBundleName=APP_NAME, CFBundleVersion=str(build_number),
                 ClassicVoicesTestCopy='YES', ClassicVoicesAppGroup=GROUP,
-                ClassicVoicesVoicePrefix=PREFIX, ClassicVoicesSubtype='cvpt', ClassicVoicesManufacturer='PnTh')
+                ClassicVoicesVoicePrefix=PREFIX, ClassicVoicesSubtype=SUBTYPE, ClassicVoicesManufacturer='PnTh')
+    if short_version is not None:
+        info['CFBundleShortVersionString'] = short_version
     for key in ['DTDeveloperName', 'DTDeveloperTeamID', 'DeveloperTeamIdentifier']:
         info.pop(key, None)
+    if PREFIX != 'org.pantheraspeech.classicvoices.port':
+        info['ClassicVoicesTestLabel'] = APP_NAME
     if extension:
         component = info['NSExtension']['NSExtensionAttributes']['AudioComponents'][0]
-        component.update(subtype='cvpt', manufacturer='PnTh', name='Classic Voices Panthera',
+        component.update(subtype=SUBTYPE, manufacturer='PnTh', name=APP_NAME,
                          version=0x10000 + int(info['CFBundleVersion']))
     path.write_bytes(plistlib.dumps(info, sort_keys=False))
 
-def copy_data(source, destination, macintalk_only=False):
+def copy_data(source, destination, macintalk_only=False, omit_alex=False):
     if not source:
         return
     for directory in source.iterdir():
-        if macintalk_only and directory.name not in {'mt104','mt105','mt106','mt107'}:
+        if macintalk_only and directory.name not in {'mt104','mt105','mt106','mt107','mtios10'}:
             continue
         if directory.name.startswith('.') or not directory.is_dir():
             continue
-        if directory.name not in {'ios3','ios4','ios5','ios6','ios70','ios7','ios10','mac107','mac108','mac109','siri7','mt104','mt105','mt106','mt107'}:
+        if directory.name not in {'ios3','ios4','ios5','ios6','ios70','ios7','ios10','mac107','mac108','mac109','siri7','mt104','mt105','mt106','mt107','mtios10'}:
             continue
+        ignore_metadata = shutil.ignore_patterns('_CodeSignature', '*.DS_Store')
+        def ignore(path, names):
+            skipped = set(ignore_metadata(path, names))
+            if omit_alex and directory.name in {'mt105', 'mt106', 'mt107', 'mtios10'} and Path(path) == directory / 'Voices':
+                skipped.update({'Alex.SpeechVoice', 'Alex-sequoia.SpeechVoice'} & set(names))
+            return skipped
         shutil.copytree(directory, destination / directory.name, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns('_CodeSignature', '*.DS_Store'), copy_function=shutil.copyfile)
+                        ignore=ignore, copy_function=shutil.copyfile)
 
 def main():
+    global PREFIX,GROUP,APP_NAME,SUBTYPE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--platform', choices=['mac','ios'], required=True)
     parser.add_argument('--voices', type=Path, help='Classic-format Voices folder, copied into the private app')
     parser.add_argument('--macintalk', type=Path, help='mt104..mt107 folders, copied over the voice data')
     parser.add_argument('--native', type=Path, help='Mac-only folder of locally built native .so libraries')
+    parser.add_argument('--omit-alex', action='store_true', help='leave Alex recordings out of the app while keeping the engines')
     parser.add_argument('--settings', type=Path, help='optional Classic settings JSON or export envelope; logging forced off')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--no-archive', action='store_true', help='Mac only: produce the app without an additional ZIP')
     parser.add_argument('--require-vocalizer',action='store_true',help='refuse a package missing any standard Vocalizer engine or compact voice set')
     parser.add_argument('--build-number',type=int,help='defaults to source commit count; advances the AU cache version')
+    parser.add_argument('--short-version',help='optional user-facing app version, applied to app and extension')
+    parser.add_argument('--identity-prefix',default=PREFIX,help='separate app and voice identity for a private preview')
+    parser.add_argument('--app-group',help='defaults to the port group or a separate group for a custom identity')
+    parser.add_argument('--app-name',default=APP_NAME)
+    parser.add_argument('--subtype',default=SUBTYPE,help='four ASCII characters for a separate Audio Unit component')
+    parser.add_argument('--experimental-ios10-alex',action='store_true',help='enable the experimental ARM32 MacinTalk backend')
     args = parser.parse_args()
+    if args.no_archive and args.platform != 'mac': parser.error('--no-archive is Mac-only')
+    import re
+    if args.short_version and not re.fullmatch(r'\d+(?:\.\d+){0,2}', args.short_version):
+        parser.error('Version must contain one to three numeric components')
+    if not re.fullmatch(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+',args.identity_prefix):
+        parser.error('Invalid identity prefix')
+    if len(args.subtype)!=4 or not args.subtype.isascii(): parser.error('Subtype must have four ASCII characters')
+    GROUP=args.app_group or (GROUP if args.identity_prefix==PREFIX else 'group.'+args.identity_prefix)
+    PREFIX=args.identity_prefix;APP_NAME=args.app_name;SUBTYPE=args.subtype
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    app = output / 'Classic Voices Panthera.app'
+    app = output / (APP_NAME+'.app')
     if app.exists():
         raise SystemExit('Output app already exists. Preserve it or choose a new output directory.')
     spec = yaml.safe_load((ROOT/'ios/project.yml').read_text())
@@ -99,20 +130,37 @@ def main():
         derived = ROOT/'build/port-ios-derived'
         project = directory/'ClassicVoicesPortBuild.xcodeproj'
     scheme = 'ClassicVoicesMacPublic' if args.platform=='mac' else 'ClassicVoices'
+    # The main port must not share provider classes with upstream Classic
+    # Voices or previously loaded Synth modules in Apple's catalog host.
+    isolated_modules = True
     if not args.skip_build:
         run(['xcodegen','generate','-q','--spec',config,'--project',directory])
+        experiment_flags=[]
+        if args.experimental_ios10_alex:
+            experiment_flags=['OTHER_CFLAGS=$(inherited) -fblocks -DCV_MT_ARM32_EXPERIMENT=1',
+                              'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) CV_PUBLIC CV_IOS10_ALEX',
+                              'OTHER_LDFLAGS=$(inherited) -licucore']
+        if isolated_modules:
+            namespace='CV'+hashlib.sha256(PREFIX.encode()).hexdigest()[:8]
+            experiment_flags.append('PRODUCT_MODULE_NAME=$(TARGET_NAME)_'+namespace)
         run(['xcodebuild','-project',project,'-scheme',scheme,
              '-configuration','Release','-destination','generic/platform='+('macOS' if args.platform=='mac' else 'iOS'),
              '-derivedDataPath',derived,'-jobs','6','ARCHS=arm64','ONLY_ACTIVE_ARCH=YES',
-             'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=','build'])
+             'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY=',*experiment_flags,'build'])
     products = derived/'Build/Products'/('Release' if args.platform=='mac' else 'Release-iphoneos')
     original = products/('Classic Voices.app' if args.platform=='mac' else 'ClassicVoices.app')
+    if isolated_modules:
+        compiled_info=original/('Contents/PlugIns/Synth.appex/Contents/Info.plist' if args.platform=='mac' else 'PlugIns/Synth.appex/Info.plist')
+        expected='CV'+hashlib.sha256(PREFIX.encode()).hexdigest()[:8]
+        principal=plistlib.loads(compiled_info.read_bytes())['NSExtension']['NSExtensionPrincipalClass']
+        if '_'+expected+'.' not in principal:
+            raise SystemExit('The compiled preview lacks its isolated module namespace; rebuild without --skip-build.')
     shutil.copytree(original, app, symlinks=True)
     extension = app / ('Contents/PlugIns/Synth.appex' if args.platform=='mac' else 'PlugIns/Synth.appex')
     resources = extension / ('Contents/Resources' if args.platform=='mac' else '')
     voices = resources/'Voices';voices.mkdir(parents=True,exist_ok=True)
-    copy_data(args.voices, voices)
-    copy_data(args.macintalk, voices, macintalk_only=True)
+    copy_data(args.voices, voices, omit_alex=args.omit_alex)
+    copy_data(args.macintalk, voices, macintalk_only=True, omit_alex=args.omit_alex)
     if args.native and args.platform=='mac':
         shutil.copytree(args.native, resources/'Native', dirs_exist_ok=True,copy_function=shutil.copyfile)
     if args.settings:
@@ -130,7 +178,7 @@ def main():
                         if not (resources/'Native'/('cvnative_'+build+'.so')).is_file()]
         if missing:
             raise SystemExit('Incomplete Vocalizer package: '+', '.join(missing))
-    for bundle in [extension,app]: configure_bundle(bundle,args.platform,bundle==extension,args.build_number)
+    for bundle in [extension,app]: configure_bundle(bundle,args.platform,bundle==extension,args.build_number,args.short_version)
     # Release build products still contain linker debug/local symbol paths.
     # Strip those from our executables before signing; runtime metadata and
     # exported AU/native ABI symbols remain available.
@@ -179,7 +227,7 @@ def main():
             for path in app.rglob('*'):
                 if path.is_file():z.write(path,'Payload/ClassicVoices.app/'+path.relative_to(app).as_posix())
         print('Private sideloadable IPA:',archive)
-    else:
+    elif not args.no_archive:
         run(['ditto','-c','-k','--keepParent',app,output/'Classic Voices Panthera Mac.zip'])
     print('Private local app:',app)
 

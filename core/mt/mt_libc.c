@@ -711,11 +711,13 @@ static pthread_mutex_t *mutex_of(Mt *m, X86 *c, uint32_t g) { (void)m; return &g
 static pthread_cond_t *cond_of(Mt *m, X86 *c, uint32_t g) { (void)m; return &g_cond[sync_slot(&g_ctab, c, g)]; }
 static void h_mutex_init(Mt *m, X86 *c) { sync_destroy(&g_mtab, c, A(c, 0)); wr32(c, A(c, 0), 0); mutex_of(m, c, A(c, 0)); R(c, 0); }
 static void h_mutex_lock(Mt *m, X86 *c) { mt_lock(m, c, mutex_of(m, c, A(c, 0))); R(c, 0); }
+static void h_mutex_trylock(Mt *m, X86 *c) { R(c, (uint32_t)pthread_mutex_trylock(mutex_of(m, c, A(c, 0)))); }
 static void h_mutex_unlock(Mt *m, X86 *c) { R(c, (uint32_t)pthread_mutex_unlock(mutex_of(m, c, A(c, 0)))); }
 static void h_mutex_destroy(Mt *m, X86 *c) { (void)m; sync_destroy(&g_mtab, c, A(c, 0)); R(c, 0); }
 static void h_cond_destroy(Mt *m, X86 *c) { (void)m; sync_destroy(&g_ctab, c, A(c, 0)); R(c, 0); }
 static void h_cond_init(Mt *m, X86 *c) { sync_destroy(&g_ctab, c, A(c, 0)); wr32(c, A(c, 0), 0); cond_of(m, c, A(c, 0)); R(c, 0); }
 static void h_cond_signal(Mt *m, X86 *c) { R(c, (uint32_t)pthread_cond_signal(cond_of(m, c, A(c, 0)))); }
+static void h_cond_broadcast(Mt *m, X86 *c) { R(c, (uint32_t)pthread_cond_broadcast(cond_of(m, c, A(c, 0)))); }
 static void h_cond_wait(Mt *m, X86 *c) {
     if (m->dying) x86_fault(c, "engine shut down");
     R(c, (uint32_t)pthread_cond_wait(cond_of(m, c, A(c, 0)), mutex_of(m, c, A(c, 1))));
@@ -802,9 +804,11 @@ const MtHleEntry mt_hle_libc[] = {
     {"_abort", h_abort}, {"___stack_chk_fail", h_stack_chk_fail}, {"_exit", h_exit}, {"___assert_rtn", h_assert_rtn}, {"_getenv", h_getenv},
     {"_usleep", h_usleep}, {"___error", h_error}, {"___cxa_atexit", h_cxa_atexit}, {"_setlocale", h_setlocale},
     {"_pthread_mutex_init", h_mutex_init}, {"_pthread_mutex_lock", h_mutex_lock}, {"_pthread_mutex_unlock", h_mutex_unlock},
+    {"_pthread_mutex_trylock", h_mutex_trylock},
     {"_pthread_mutex_destroy", h_mutex_destroy}, {"_pthread_mutexattr_init", h_zero}, {"_pthread_mutexattr_destroy", h_zero},
     {"_pthread_mutexattr_settype", h_zero}, {"_pthread_cond_init", h_cond_init}, {"_pthread_cond_destroy", h_cond_destroy},
     {"_pthread_cond_signal", h_cond_signal}, {"_pthread_cond_wait", h_cond_wait}, {"_pthread_once", h_once},
+    {"_pthread_cond_broadcast", h_cond_broadcast},
     {"_pthread_self", h_pthread_self}, {"_pthread_key_create", h_key_create},
     {"_pthread_getspecific", h_getspecific}, {"_pthread_setspecific", h_setspecific},
     {"_pthread_mach_thread_np", h_zero},

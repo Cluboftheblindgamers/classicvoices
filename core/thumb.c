@@ -61,6 +61,7 @@ static int run(Cpu *c, uint32_t stop) {
     Core *k = &c->k;
     int check_native = 1;
     for (;;) {
+        if (c->abort && *c->abort) cpu_fault(c,"engine shut down");
         uint32_t pc = k->r[15];
         if (pc == stop) return 0;
         if (pc == c->return_addr) return 1;

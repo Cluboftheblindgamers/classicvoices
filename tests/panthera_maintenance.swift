@@ -126,8 +126,9 @@ import Foundation
                     Pronunciations.prepare($0.text, entries: [], settings: settings, generation: gen, internalMarks: true)
                 }.joined()
                 require(output.contains("[[slnc \(ms)]]"), "explicit long pause on " + gen.rawValue)
-                let separator = gen == .lion ? " " : gen == .snowleopard ? " , " : " ,  "
-                require(output == "\"TextEdit\" [[slnc \(ms)]]" + separator + "window",
+                let separator = (gen == .lion || gen.preservesUnicode) ? " " : gen == .snowleopard ? " , " : " ,  "
+                let label = gen.preservesUnicode ? "TextEdit" : "\"TextEdit\""
+                require(output == label + " [[slnc \(ms)]]" + separator + "window",
                         "long pause retains role punctuation on " + gen.rawValue)
                 for label in ["Done.", "Done?", "Done!", "Done,"] {
                     let punctuated = SSMLRequest(ssml: "<speak>\(label)<break time='\(ms)ms'/>window</speak>")

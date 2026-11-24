@@ -569,7 +569,9 @@ def main():
     ranges = []
     for s in dump.texts + [s for s in dump.sects if s["flags"] & 0xFF in
                            (S_SYMBOL_STUBS, S_NON_LAZY_SYMBOL_POINTERS, S_LAZY_SYMBOL_POINTERS)]:
-        if s["image"] in used:
+        # Some older Mach-O images have empty stub sections. An empty range
+        # cannot validate code and is rejected by the runtime matcher.
+        if s["image"] in used and s["size"] > 0:
             from_dump = dump.read(s["addr"], s["size"])
             h = 0xcbf29ce484222325
             for byte in from_dump:

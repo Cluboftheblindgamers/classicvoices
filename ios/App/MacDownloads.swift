@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import Observation
 
@@ -22,19 +23,24 @@ final class MacDownloads {
         let gender: String
         let url: String
         let size: Int
+        let archive: String? // combined-zip for iOS10 compact/premium projects
+        let sha1: String?
         var id: String { "\(era)/\(product)" }
     }
 
     private struct File: Codable { let voices: [Voice] }
 
     static let catalog: [Voice] = {
-        guard let url = Bundle.main.url(forResource: "MacVoiceCatalog", withExtension: "json"),
-              let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode(File.self, from: data))?.voices ?? []
+        ["MacVoiceCatalog", "IOS10CombinedVoiceCatalog"].flatMap { resource -> [Voice] in
+            guard let url=Bundle.main.url(forResource:resource,withExtension:"json"),
+                  let data=try? Data(contentsOf:url) else { return [] }
+            return (try? JSONDecoder().decode(File.self,from:data))?.voices ?? []
+        }
     }()
 
     static func eraName(_ era: String) -> String {
-        VoiceCatalog.macEras.first { $0.0 == era }.map { "Mac OS X \($0.2) \($0.1)" } ?? era
+        if era == "ios10" { return "iOS 10" }
+        return VoiceCatalog.macEras.first { $0.0 == era }.map { "Mac OS X \($0.2) \($0.1)" } ?? era
     }
 
     var progress: [String: Double] = [:]   // in whole percents
@@ -161,8 +167,22 @@ final class MacDownloads {
         try? fm.removeItem(at: staging)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: staging) }
-        let folders = try MacVoicePackage.extract(pkg, to: staging, keep: { _ in true },
-                                                  progress: progress)
+        let folders: [String]
+        if v.archive == "combined-zip" {
+            guard let expected=v.sha1 else { throw CombinedVoicePackage.PackageError.invalid }
+            let fh=try FileHandle(forReadingFrom:pkg)
+            defer { try? fh.close() }
+            var hash=Insecure.SHA1()
+            while let chunk=try fh.read(upToCount:1<<20), !chunk.isEmpty { hash.update(data:chunk) }
+            let actual=hash.finalize().map { String(format:"%02x",$0) }.joined()
+            guard actual==expected else {
+                throw NSError(domain:"ClassicVoices",code:1,userInfo:[NSLocalizedDescriptionKey:"Checksum mismatch"])
+            }
+            try ZipExtractor.extract(pkg,to:staging)
+            folders=try CombinedVoicePackage.prepare(assetData:staging.appendingPathComponent("AssetData"),name:v.name,to:staging)
+        } else {
+            folders=try MacVoicePackage.extract(pkg,to:staging,keep:{_ in true},progress:progress)
+        }
         guard !folders.isEmpty else {
             throw NSError(domain: "ClassicVoices", code: 4, userInfo: [NSLocalizedDescriptionKey: "No voice in package"])
         }

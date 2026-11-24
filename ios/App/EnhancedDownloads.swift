@@ -3,14 +3,15 @@ import CryptoKit
 import Foundation
 import Observation
 
-/// Downloads the original iOS 5/6/7 enhanced voices from Apple's MobileAsset
+/// Downloads the original iOS 5/6/7/10 enhanced voices from Apple's MobileAsset
 /// servers (as the phone's Settings did), verifies them, and hands them to the
 /// speech extension's store (VoiceStore) so it can use them.
 @MainActor @Observable
 final class EnhancedDownloads {
     struct Asset: Codable, Hashable, Identifiable {
-        let build: String       // "ios5" / "ios6" / "ios70"
+        let build: String       // "ios5" / "ios6" / "ios70" / "ios10"
         let language: String
+        let name: String?  // downloadable-only voices have no bundled compact to name their row
         let url: String
         let size: Int
         let unarchivedSize: Int
@@ -19,9 +20,11 @@ final class EnhancedDownloads {
     }
 
     static let catalog: [Asset] = {
-        guard let url = Bundle.main.url(forResource: "EnhancedCatalog", withExtension: "json"),
-              let data = try? Data(contentsOf: url) else { return [] }
-        return (try? JSONDecoder().decode([Asset].self, from: data)) ?? []
+        ["EnhancedCatalog", "IOS10VoiceCatalog"].flatMap { resource -> [Asset] in
+            guard let url = Bundle.main.url(forResource: resource, withExtension: "json"),
+                  let data = try? Data(contentsOf: url) else { return [] }
+            return (try? JSONDecoder().decode([Asset].self, from: data)) ?? []
+        }
     }()
 
     var progress: [String: Double] = [:]   // asset id -> 0...1, in whole percents
@@ -58,7 +61,7 @@ final class EnhancedDownloads {
 
     /// Name of the built-in voice for the same build/language (enhanced voices share it).
     static func voiceName(_ a: Asset) -> String {
-        VoiceCatalog.entries.first { $0.build == a.build && $0.language == a.language && !$0.enhanced }?.name ?? a.language
+        a.name ?? VoiceCatalog.entries.first { $0.build == a.build && $0.language == a.language && !$0.enhanced }?.name ?? a.language
     }
 
     func download(_ a: Asset) {

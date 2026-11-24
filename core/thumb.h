@@ -40,6 +40,8 @@ struct Cpu {
     // long sentence's parse ends early. Last, so fast code built before it
     // never looks.
     volatile int interrupt;
+    // Optional whole-engine watchdog. Appended to preserve fast-code ABI.
+    volatile int *abort;
 };
 
 void cpu_init(Cpu *cpu, uint8_t *mem);

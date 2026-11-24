@@ -15,6 +15,11 @@
 
 uint32_t mt_audio_take(float *dst, uint32_t from, uint32_t max, uint32_t hold, int *done, unsigned wait_us);
 uint32_t mt_audio_slices(void);
+#ifdef CV_MT_ARM32_EXPERIMENT
+uint32_t mt_arm32_render(Mt *m,float *output,uint32_t frames);
+double mt_arm32_audio_rate(void);
+int mt_arm32_audio_started(void);
+#endif
 
 struct MtEngine {
     Mt *m;
@@ -32,6 +37,7 @@ struct MtEngine {
     int volume_milli;
     int fixed_pitch_tenths;
     uint32_t property_keys[4], fixed_values[4], modulation_numbers[201];
+    uint32_t reset_key;
     jmp_buf jb;
     char err[512];
     // watchdog: a call into the engine that never returns, or an engine
@@ -148,7 +154,12 @@ static uint32_t call(MtEngine *e, uint32_t fn, int nargs, const uint32_t *args) 
 }
 
 const char *mte_error(MtEngine *e) { return e->err; }
-double mte_sample_rate(MtEngine *e) { (void)e; return mt_audio_rate(); }
+double mte_sample_rate(MtEngine *e) {
+#ifdef CV_MT_ARM32_EXPERIMENT
+    if (e->m->arm32) return mt_arm32_audio_rate();
+#endif
+    return mt_audio_rate();
+}
 
 #define GUARD(e, failret) \
     (e)->m->fault = &(e)->jb; \
@@ -164,7 +175,16 @@ MtEngine *mte_open_phrasing(const char *root, int phrasing, char *err, size_t er
     e->inflection = -1;
     e->volume_milli = -1;
     e->fixed_pitch_tenths = 10000;
+    char engine_path[1200]; snprintf(engine_path,sizeof engine_path,"%s/MacinTalk",root);
+    FILE *engine_file=fopen(engine_path,"rb"); uint32_t header[2]={0};
+    if (engine_file) { fread(header,1,sizeof header,engine_file); fclose(engine_file); }
+    int arm32=header[0]==0xfeedfaceu && header[1]==12;
+#ifdef CV_MT_ARM32_EXPERIMENT
+    e->m = arm32 ? mt_create_arm32(err,errlen) : mt_create(err,errlen);
+#else
+    if (arm32) { snprintf(err,errlen,"iOS 10 Alex support is not enabled in this build"); free(e); return NULL; }
     e->m = mt_create(err, errlen);
+#endif
     if (!e->m) { free(e); return NULL; }
     e->m->phrase_mode = phrasing >= 0 && phrasing <= 4 ? phrasing : 0;
     e->m->verbose = getenv("MT_VERBOSE") ? atoi(getenv("MT_VERBOSE")) : 0;
@@ -182,12 +202,14 @@ MtEngine *mte_open_phrasing(const char *root, int phrasing, char *err, size_t er
         snprintf(p, sizeof p, "%s/lib/%s", root, libs[i]);
         if (exists(p)) mt_load(e->m, p);
     }
-    snprintf(p, sizeof p, "%s/SpeechDictionary/SpeechDictionary", root);
-    mt_load(e->m, p);
+    if (!arm32) {
+        snprintf(p, sizeof p, "%s/SpeechDictionary/SpeechDictionary", root);
+        mt_load(e->m, p);
+    }
     snprintf(p, sizeof p, "%s/MacinTalk", root);
     e->image = mt_load(e->m, p);
     mt_bind_all(e->m);
-    mt_native_attach(e->m);
+    if (!arm32) mt_native_attach(e->m);
     snprintf(p, sizeof p, "%s/SpeechDictionary", root);
     mt_cf_set_dictionary_bundle(e->m, p);
     mt_run_initializers(e->m);
@@ -258,7 +280,12 @@ static int prop_index(uint32_t sel) {
 }
 static uint32_t cached_prop_key(MtEngine *e, uint32_t sel) {
     int index = prop_index(sel);
-    if (!e->property_keys[index]) e->property_keys[index] = mt_speech_key(e->m, prop_key(sel));
+    if (!e->property_keys[index]) {
+        if (e->m->arm32) {
+            const char *key=sel==SO_RATE ? "rate" : sel==SO_PBAS ? "pbas" : sel==SO_PMOD ? "pmod" : "volm";
+            e->property_keys[index]=mt_cf_string(e->m,key,4);
+        } else e->property_keys[index] = mt_speech_key(e->m, prop_key(sel));
+    }
     return e->property_keys[index];
 }
 
@@ -303,7 +330,8 @@ static int set_fixed(MtEngine *e, uint32_t sel, double val) {
 // VoiceOver's values again.
 static void reset_channel(MtEngine *e) {
     if (e->fn_setprop) {  // 10.7: SESetSpeechProperty(chan, kSpeechResetProperty, NULL)
-        uint32_t a[3] = {e->chan, mt_speech_key(e->m, "_kSpeechResetProperty"), 0};
+        if (!e->reset_key) e->reset_key=e->m->arm32 ? mt_cf_string(e->m,"rset",4) : mt_speech_key(e->m,"_kSpeechResetProperty");
+        uint32_t a[3] = {e->chan, e->reset_key, 0};
         call(e, e->fn_setprop, 3, a);
     } else if (e->fn_setinfo) {
         uint32_t a[3] = {e->chan, SO_RSET, 0};
@@ -470,6 +498,11 @@ static size_t convert(MtEngine *e, const char *s, const char *end, char *out, si
         // pass through, as they did with the original Speech Manager voices.
         if (cp == 0x2019 || cp == 0x2018) cp = '\'';
         if (cp < 0x20 && cp != '\t' && cp != '\n' && cp != '\r') cp = ' ';  // control bytes stand for other characters in 10.7's strings
+        if (e->m->arm32) {
+            if (cp<128) PUT(cp);
+            else for (int i=0;i<len;i++) PUT(p[-len+i]);
+            continue;
+        }
         int mr = to_macroman(cp);
         if (mr < 0) mr = ' ';
         PUT(mr);
@@ -660,6 +693,40 @@ static int speak_one(MtEngine *e, const char *text, size_t len, MtPcmCallback cb
         rc = (int)call(e, e->fn_speakcf, 3, a);
     }
     if (rc) { mt_free(m, buf); snprintf(e->err, sizeof e->err, "SESpeakBuffer failed: %d", rc); return rc; }
+#ifdef CV_MT_ARM32_EXPERIMENT
+    if (m->arm32) {
+        float samples[512]; double due=now_s(), began=due;
+        int was_started=0, stopped=0;
+        while (!mte_broken(e)) {
+            int started=mt_arm32_audio_started();
+            if (was_started && !started) break;
+            was_started |= started;
+            e->call_t0=now_s();
+            uint32_t count=mt_arm32_render(m,samples,512);
+            e->call_t0=0;
+            if (count && !stopped && cb(ctx,samples,count)) {
+                stopped=1;
+                pthread_mutex_lock(&e->dog_mu);
+                e->stop_deadline=now_s()+MT_STOP_LIMIT;
+                pthread_cond_signal(&e->dog_cv);
+                pthread_mutex_unlock(&e->dog_mu);
+                uint32_t stop_args[]={e->chan,0}; call(e,e->fn_stop,2,stop_args);
+            }
+            if (stopped) { usleep(250); }
+            else if (count) {
+                due+=count/mt_arm32_audio_rate(); double delay=due-now_s();
+                if (delay>0) usleep((useconds_t)(delay*1e6));
+            } else {
+                due=now_s();
+                if (!was_started && due-began>MT_CALL_LIMIT) { m->broken=1; snprintf(e->err,sizeof e->err,"iOS Alex did not start its audio output"); break; }
+                usleep(1000);
+            }
+        }
+        pthread_mutex_lock(&e->dog_mu); e->stop_deadline=0; pthread_mutex_unlock(&e->dog_mu);
+        mt_free(m,buf);
+        return mte_broken(e) ? -1 : 0;
+    }
+#endif
     float tmp[4096];
     uint32_t pos = 0, slices = mt_audio_slices();
     double last_change = now_s();
@@ -740,6 +807,7 @@ int mte_prepare(MtEngine *e, const char *voice) {
 // The phonemes MacinTalk would speak for `utf8` (MacRoman text, no ESC
 // commands), for checking what the engine makes of a piece of text.
 int mte_phonemes(MtEngine *e, const char *voice, const char *utf8, char *out, size_t cap) {
+    if (e->m->arm32) { snprintf(e->err,sizeof e->err,"iOS Alex does not expose the Mac phoneme-conversion entry point"); return -1; }
     if (!cap) return -1;
     out[0] = 0;
     if (mte_broken(e)) return -1;

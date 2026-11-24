@@ -15,8 +15,8 @@ PY=${PYTHON:-python3}
 WORK=${WORK:-$ROOT/build/firmware}
 
 # build -> version, device. iPhone 3GS firmware for the classic voices, and
-# the iPhone 4's iOS 7.0.6 for iOS 7's; iOS 7.1.2 and 10 are only engines for
-# the Mac OS X Mavericks voices.
+# the iPhone 4's iOS 7.0.6 for iOS 7's. iOS 7.1.2 and 10 also supply engines
+# for Mavericks; iOS 10's own enhanced voices can be downloaded in the app.
 spec() {
     case $1 in
         ios3) echo "3.1.3 iPhone2,1" ;;

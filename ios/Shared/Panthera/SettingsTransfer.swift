@@ -31,7 +31,7 @@ enum PantheraSettingsTransfer {
     }
     private static let prefixes = ["volume", "rate_wpm", "number_style", "accept_commands", "reset_commands",
         "twenty_four_hour", "expand_abbreviations", "expand_dates", "capitals_as_words", "phrasing",
-        "rate_boost", "natural_pauses", "quick_interrupt", "inflection", "mac_pauses"]
+        "rate_boost", "natural_pauses", "quick_interrupt", "inflection", "mac_pauses", "announcement_pause_percent"]
     private static func importPropertyList(_ data: Data, preserving current: SpeechSettings) throws -> SpeechSettings {
         guard let values = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
             throw ImportError.invalid

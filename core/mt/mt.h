@@ -80,9 +80,13 @@ struct Mt {
     size_t nnative;
     uint32_t *profile;
     uint32_t profile_lo, profile_hi;
+    int arm32; // private iOS MacinTalk backend; existing x86 hosts remain zero
 };
 
 Mt *mt_create(char *err, size_t errlen);
+#ifdef CV_MT_ARM32_EXPERIMENT
+Mt *mt_create_arm32(char *err, size_t errlen);
+#endif
 void mt_destroy(Mt *m);  // stops the engine's threads, frees everything
 
 // load / bind / initialise

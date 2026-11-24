@@ -159,10 +159,15 @@ static void on_trap(X86 *c, uint32_t addr, void *ctx) {
 }
 
 static uint32_t trap_for(Mt *m, const char *name) {
+#ifdef CV_MT_ARM32_EXPERIMENT
+    const uint32_t thumb_bit = m->arm32 ? 1 : 0;
+#else
+    const uint32_t thumb_bit = 0;
+#endif
     const uint32_t mask = 2 * MT_TRAP_SLOTS - 1;
     uint32_t h = mt_str_hash(name) & mask;
     for (; m->trap_index[h]; h = (h + 1) & mask)
-        if (strcmp(m->trap_name[m->trap_index[h] - 1], name) == 0) return MT_TRAP_BASE + 16u * (uint32_t)(m->trap_index[h] - 1);
+        if (strcmp(m->trap_name[m->trap_index[h] - 1], name) == 0) return (MT_TRAP_BASE + 16u * (uint32_t)(m->trap_index[h] - 1)) | thumb_bit;
     if (m->ntraps >= (int)MT_TRAP_SLOTS) die(m, "too many imports");
     int i = m->ntraps++;
     m->trap_index[h] = (uint16_t)(i + 1);
@@ -177,10 +182,13 @@ static uint32_t trap_for(Mt *m, const char *name) {
             m->trap_fn[i] = mt_lookup_hle(base);
         }
     }
-    return MT_TRAP_BASE + 16u * (uint32_t)i;
+    return (MT_TRAP_BASE + 16u * (uint32_t)i) | thumb_bit;
 }
 
 uint32_t mt_call_on(Mt *m, X86 *c, uint32_t fn, int nargs, const uint32_t *args) {
+#ifdef CV_MT_ARM32_EXPERIMENT
+    if (m->arm32) return mt_arm32_call(m, c, fn, nargs, args);
+#endif
     (void)m;
     uint32_t sp = c->r[ESP], eip = c->eip, stop = c->stop;
     // keep the i386 ABI's 16-byte stack alignment at the call
@@ -211,6 +219,7 @@ static int g_nspare;
 
 MtThread *mt_thread_new(Mt *m) {
     MtThread *t = calloc(1, sizeof *t);
+    if (!t) return NULL;
     t->m = m;
     x86_init(&t->cpu, m->mem);
     t->cpu.mem_size = m->mem_size;
@@ -243,6 +252,9 @@ MtThread *mt_thread_new(Mt *m) {
     t->cpu.profile_hi = m->profile_hi;
     if (!t->errno_addr) t->errno_addr = mt_static(m, 4);
     if (!t->self) t->self = mt_static(m, 64);  // an opaque guest object standing for pthread_t
+#ifdef CV_MT_ARM32_EXPERIMENT
+    if (m->arm32) mt_arm32_thread_init(t);
+#endif
     return t;
 }
 
@@ -301,15 +313,25 @@ void mt_log(const char *fmt, ...) {
 
 static void data_imports_init(Mt *m);
 
-Mt *mt_create(char *err, size_t errlen) {
+static Mt *create_arch(char *err, size_t errlen, int arm32) {
     Mt *m = calloc(1, sizeof *m);
+    if (!m) { snprintf(err,errlen,"cannot allocate MacinTalk host"); return NULL; }
+    m->arm32 = arm32;
     // The full 2 GB when the process may map it; otherwise the largest smaller layout it may.
-    static const struct { uint32_t size, heap_hi; } layouts[] = {
+    typedef struct { uint32_t size, heap_hi; } Layout;
+    static const Layout x86_layouts[] = {
         {0x80000000u, 0x40000000u}, {0x50000000u, 0x20000000u}, {0x40000000u, 0x18000000u},
     };
+    // Keep every ARM guest address below the existing Thumb runtime limit;
+    // the file-backed 870-MB Alex bank fits without reserving a 1-GB heap.
+    static const Layout arm_layouts[] = {
+        {0x44000000u,0x08000000u},{0x40000000u,0x05000000u}
+    };
+    const Layout *layouts = arm32 ? arm_layouts : x86_layouts;
+    size_t nlayouts = arm32 ? sizeof arm_layouts/sizeof *arm_layouts : sizeof x86_layouts/sizeof *x86_layouts;
     m->mem = MAP_FAILED;
     const char *force = getenv("CLASSICVOICES_MT_GUEST_MB");  // testing: pretend only this much can be mapped
-    for (size_t i = 0; i < sizeof layouts / sizeof layouts[0] && m->mem == MAP_FAILED; i++) {
+    for (size_t i = 0; i < nlayouts && m->mem == MAP_FAILED; i++) {
         if (force && layouts[i].size > (uint32_t)atoi(force) << 20) continue;
         m->mem = mmap(NULL, layouts[i].size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (m->mem == MAP_FAILED) continue;
@@ -324,6 +346,7 @@ Mt *mt_create(char *err, size_t errlen) {
     g_next_stack = m->stack_top;
     g_nspare = 0;
     m->main = mt_thread_new(m);
+    if (!m->main) { snprintf(err,errlen,"cannot allocate main guest thread"); munmap(m->mem,m->mem_size); free(m); return NULL; }
     m->heap_lo = m->heap_next = MT_IMAGE_BASE;  // moved past the images as they load
     m->map_next = m->map_lo;
     memset(g_free_small, 0, sizeof g_free_small);
@@ -331,8 +354,13 @@ Mt *mt_create(char *err, size_t errlen) {
     // the stop address must be executable by the trap check: it lies below trap_lo,
     // so x86_run simply stops when eip reaches it
     data_imports_init(m);
+    mt_set_speed(arm32 ? 1 : 128);
     return m;
 }
+Mt *mt_create(char *err,size_t errlen) { return create_arch(err,errlen,0); }
+#ifdef CV_MT_ARM32_EXPERIMENT
+Mt *mt_create_arm32(char *err,size_t errlen) { return create_arch(err,errlen,1); }
+#endif
 
 void mt_reset_globals(void);  // each module's state (mt_hle.c)
 void mt_wake_all(void);
@@ -342,11 +370,14 @@ void mt_destroy(Mt *m) {
     for (int i = 0; i < 2000 && m->live > 0; i++) { mt_wake_all(); usleep(1000); }
     if (m->live > 0) mt_log("%d engine threads did not stop; leaking the engine", m->live);
     if (m->live > 0) return;
+#ifdef CV_MT_ARM32_EXPERIMENT
+    if (m->arm32) mt_arm32_reset(m);
+#endif
     mt_reset_globals();
     munmap(m->mem, m->mem_size);
-    for (int i = 0; i < m->nimages; i++) { free(m->images[i].file); free(m->images[i].exports); }
+    for (int i = 0; i < m->nimages; i++) { free(m->images[i].file); free(m->images[i].exports); free((void *)m->images[i].path); }
     for (int i = 0; i < m->ntraps; i++) free((void *)m->trap_name[i]);
-    free(m);
+    free(m->main); free(m->profile); free(m);
 }
 
 // ---------------------------------------------------------------- loading
@@ -365,19 +396,27 @@ static uint8_t *read_file(Mt *m, const char *path, size_t *len) {
 }
 
 static const uint8_t *find_i386(Mt *m, const uint8_t *file, size_t len, const char *path) {
+#ifdef CV_MT_ARM32_EXPERIMENT
+    const uint32_t wanted_cpu = m->arm32 ? 12 : CPU_TYPE_X86;
+#else
+    const uint32_t wanted_cpu = CPU_TYPE_X86;
+#endif
     uint32_t magic = u32(file);
-    if (magic == MH_MAGIC) return file;
+    if (magic == MH_MAGIC) {
+        if (u32(file + 4) != wanted_cpu) die(m, "wrong CPU type in %s (expected %u)", path, wanted_cpu);
+        return file;
+    }
     if (magic != FAT_CIGAM) die(m, "%s is not a Mach-O", path);
     uint32_t n = be32(file + 4);
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *a = file + 8 + i * 20;
-        if (be32(a) == CPU_TYPE_X86) {
+        if (be32(a) == wanted_cpu) {
             uint32_t off = be32(a + 8);
             if (off >= len) die(m, "bad fat slice in %s", path);
             return file + off;
         }
     }
-    die(m, "no i386 slice in %s", path);
+    die(m, "no CPU type %u slice in %s", wanted_cpu, path);
 }
 
 static void map_image(Mt *m, MtImage *im) {
@@ -523,7 +562,11 @@ static uint32_t lookup_in_depth(MtImage *im, const char *name, int depth) {
             if (depth > 0 && strcmp(alias, name)) return lookup_in_depth(im, alias, depth - 1);
             continue;
         }
-        return u32(sy + 8) + im->slide;
+        uint32_t result = u32(sy + 8) + im->slide;
+#ifdef CV_MT_ARM32_EXPERIMENT
+        if (u32(im->slice+4)==12 && (sy[6] & 8)) result |= 1; // N_ARM_THUMB_DEF
+#endif
+        return result;
     }
     return 0;
 }

@@ -12,24 +12,30 @@ struct VoiceVersion: Identifiable, Hashable {
     let builds: [String]   // VoiceCatalog.Entry.build values it covers
 
     /// Menu title: "iOS 6" / "10.7 Lion".
-    var menuName: String { platform == .iOS ? name : "\(number) \(name)" }
+    var menuName: String { platform == .iOS ? "\(name) (\(number))" : "\(number) \(name)" }
     /// How the test sentence names it: "iOS 6" / "Mac OS X Lion" / "Siri in iOS 7".
     var spokenName: String { id == "siri7" ? "Siri in iOS 7" : platform == .iOS ? name : "Mac OS X \(name)" }
 
-    static let all: [VoiceVersion] = [
+    static let all: [VoiceVersion] = {
+        var versions: [VoiceVersion] = [
         .init(id: "ios3", platform: .iOS, name: "iOS 3", number: "3.1.3", builds: ["ios3"]),
         .init(id: "ios4", platform: .iOS, name: "iOS 4", number: "4.3.5", builds: ["ios4"]),
         .init(id: "ios5", platform: .iOS, name: "iOS 5", number: "5.1.1", builds: ["ios5"]),
         .init(id: "ios6", platform: .iOS, name: "iOS 6", number: "6.1.6", builds: ["ios6"]),
-        .init(id: "ios7", platform: .iOS, name: "iOS 7", number: "7.0.6", builds: ["ios70"]),
-        .init(id: "siri7", platform: .iOS, name: "iOS 7 Siri", number: "7.1.2", builds: ["siri7"]),
+        .init(id: "ios7", platform: .iOS, name: "iOS 7", number: "7.0.6 / 7.1.2", builds: ["ios70", "siri7"]),
+        .init(id: "ios10", platform: .iOS, name: "iOS 10", number: "10.3.4", builds: ["ios10"]),
         .init(id: "tiger", platform: .macOS, name: "Tiger", number: "10.4", builds: ["mt104"]),
         .init(id: "leopard", platform: .macOS, name: "Leopard", number: "10.5", builds: ["mt105"]),
         .init(id: "snowleopard", platform: .macOS, name: "Snow Leopard", number: "10.6", builds: ["mt106"]),
         .init(id: "lion", platform: .macOS, name: "Lion", number: "10.7", builds: ["mt107", "mac107"]),
         .init(id: "mountainlion", platform: .macOS, name: "Mountain Lion", number: "10.8", builds: ["mac108"]),
         .init(id: "mavericks", platform: .macOS, name: "Mavericks", number: "10.9", builds: ["mac109"]),
-    ]
+        ]
+#if CV_IOS10_ALEX
+        versions.insert(.init(id: "ios10Alex", platform: .iOS, name: "iOS 10 Alex", number: "10.3.4", builds: ["mtios10"]), at: 6)
+#endif
+        return versions
+    }()
 
     static func of(build: String) -> VoiceVersion? { all.first { $0.builds.contains(build) } }
 }
@@ -68,7 +74,8 @@ struct VoiceItem: Identifiable, Hashable {
         let enhanced = kind == .enhanced || kind == .premium
         let english = language.hasPrefix("en") || kind == .macinTalk
         // "Siri in iOS 7" is English; other languages name the version as the list does ("iOS 7 Siri")
-        let from = english || version.id != "siri7" ? version.spokenName : version.name
+        let siri = siriVoice != nil || entry?.build == VoiceCatalog.siri.build
+        let from = siri ? (english ? "Siri in iOS 7" : "iOS 7 Siri") : version.spokenName
         let forms = Greetings.forms(for: english ? "en" : language)
         return forms[enhanced ? 1 : 0].replacingOccurrences(of: "{name}", with: name)
             .replacingOccurrences(of: "{version}", with: from)
@@ -118,6 +125,9 @@ final class VoiceLibrary {
         Task.detached {
             try? VoiceStore.shared.flush()   // installs left from a background download
             try? VoiceStore.shared.refresh()
+            // App updates may add/remove bundled voices without an import.
+            // Notify from the containing app, as with a user's download.
+            await MainActor.run { AVSpeechSynthesisProviderVoice.updateSpeechVoices() }
         }
         Downloader.shared.restore()
     }
@@ -151,14 +161,14 @@ final class VoiceLibrary {
         for v in MacDownloads.catalog {
             guard let version = VoiceVersion.of(build: v.era) else { continue }
             // A package installs the premium voice and, often, a compact one.
-            let folders = mac.installed.contains(v.id) ? MacDownloads.folders(of: v) : [v.name]
+            let folders = Array(Set((mac.installed.contains(v.id) ? MacDownloads.folders(of: v) : []) + [v.name])).sorted()
             for folder in folders {
                 let id = "\(BuildIdentity.voicePrefix).\(v.era).\(folder)"
                 if var item = byID[id] {
                     // A bundled compact stays undeletable.
                     if item.kind == .premium || mac.installed.contains(v.id) && !isBundled(item) { item.macPackage = v }
                     byID[id] = item
-                } else if !mac.installed.contains(v.id) {
+                } else if folder == v.name {
                     add(VoiceItem(id: id, version: version, language: v.locale, name: v.name, kind: .premium,
                                   macPackage: v))
                 }
@@ -419,7 +429,11 @@ struct PlatformTab: View {
 
     init(platform: VoiceVersion.Platform) {
         self.platform = platform
-        _versionID = AppStorage(wrappedValue: "all", "version.\(platform.rawValue)")
+        let selectionKey = "version.\(platform.rawValue)"
+        if platform == .iOS && UserDefaults.standard.string(forKey: selectionKey) == "siri7" {
+            UserDefaults.standard.set("ios7", forKey: selectionKey)
+        }
+        _versionID = AppStorage(wrappedValue: "all", selectionKey)
     }
 
     private var versions: [VoiceVersion] { VoiceVersion.all.filter { $0.platform == platform } }
@@ -530,6 +544,9 @@ struct PlatformTab: View {
                 #if os(macOS)
                 .frame(maxWidth: 300)
                 #endif
+            }
+            if versionID == "ios10" {
+                Text("Premium voice packages include their compact version.").font(.footnote).foregroundStyle(.secondary)
             }
             if languages.count == 1 {
                 VoiceButtons(items: items, groupByVersion: versionID == "all", open: open)

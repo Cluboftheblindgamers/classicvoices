@@ -10,6 +10,42 @@ import Foundation
         var settings = SpeechSettings()
         require(settings.macinTalkCompatibility && !settings.logSpokenText, "safe compatibility defaults")
         require(settings.macinTalkSettings(.snowleopard).inflection == 100, "VoiceOver inflection")
+#if CV_IOS10_ALEX
+        require(settings.macinTalkSettings(.ios10Alex).inflection == 140, "iOS Alex engine default inflection")
+        let partialIOS = SpeechSettings.decode(Data(#"{"macinTalk":{"ios10Alex":{"rate":220}}}"#.utf8))!
+        require(partialIOS.macinTalkSettings(.ios10Alex).inflection == 140, "partial iOS profile keeps engine default")
+        let explicitIOS = SpeechSettings.decode(Data(#"{"macinTalk":{"ios10Alex":{"inflection":100}}}"#.utf8))!
+        require(explicitIOS.macinTalkSettings(.ios10Alex).inflection == 100, "explicit iOS inflection remains adjustable")
+        require(SpeechSettings.decode(partialIOS.encoded())!.macinTalkSettings(.ios10Alex).inflection == 140, "iOS default roundtrip")
+        let safariXML = "<speak><prosody rate='219.99998%'>Safari <break time='60ms'/> (4 of 24)</prosody></speak>"
+        let safariJob = SpeechJob.from(ssml: safariXML, voiceKey: "mtios10/Alex", settings: settings)
+        require(safariJob.text == "Safari [[slnc 60]] (4 of 24)", "captured Safari keeps text and requested break")
+        require(safariJob.macinTalkWPM == 396, "captured Safari rate remains intact")
+        let dockXML = "<speak><prosody rate='219.99998%'>Dock<break time='500ms'/>  </prosody></speak>"
+        let dockJob = SpeechJob.from(ssml: dockXML, voiceKey: "mtios10/Alex", settings: settings)
+        require(dockJob.text == "Dock[[slnc 500]] " && dockJob.trailingPauseMs == 0,
+                "iOS Alex preview final break reaches engine without duplicate host silence")
+        require(dockJob.macinTalkPitchTenths == 0 && dockJob.pitch == 100 && dockJob.macinTalkWPM == 396,
+                "final-pause experiment leaves pitch and rate unchanged")
+        let bareIOS = SpeechJob.from(ssml: "<speak>Dock</speak>", voiceKey: "mtios10/Alex", settings: settings)
+        require(bareIOS.text == "Dock" && bareIOS.trailingPauseMs == 0, "bare iOS word unchanged")
+        require(MacinTalkProvider.cacheKey(dockJob, voiceKey: "mtios10/Alex", settings: settings)
+            != MacinTalkProvider.cacheKey(bareIOS, voiceKey: "mtios10/Alex", settings: settings), "new final-pause audio has a distinct cache key")
+        let pauseIOS = SpeechJob.from(ssml: "<speak><break time='500ms'/></speak>", voiceKey: "mtios10/Alex", settings: settings)
+        require(pauseIOS.text.isEmpty && pauseIOS.trailingPauseMs == 500, "iOS silence-only request survives")
+        var noPausesIOS = settings
+        var iosProfile = settings.macinTalkSettings(.ios10Alex)
+        iosProfile.macPauses = false; noPausesIOS.macinTalk["ios10Alex"] = iosProfile
+        let disabledIOS = SpeechJob.from(ssml: dockXML, voiceKey: "mtios10/Alex", settings: noPausesIOS)
+        require(disabledIOS.text == "Dock" && disabledIOS.trailingPauseMs == 0, "iOS Mac pauses control opts out")
+        let oldDock = SpeechJob.from(ssml: dockXML, voiceKey: "mt106/Alex", settings: settings)
+        require(oldDock.trailingPauseMs == 0, "older Mac navigation trailing-pause behavior unchanged")
+        for ms in [60, 276, 300] {
+            let job = SpeechJob.from(ssml: "<speak>Safari<break time='\(ms)ms'/>Dock item</speak>", voiceKey: "mtios10/Alex", settings: settings)
+            require(job.text == "Safari [[slnc \(ms)]] Dock item", "iOS break preserved without quotes")
+        }
+
+#endif
         // Headings become words, while abbreviations, Roman numerals and
         // literal spelling keep their distinct meanings on every generation.
         for generation in Generation.allCases {
@@ -18,6 +54,16 @@ import Foundation
                 .contains("Facetime Settings Janesmith 4 HTTPS MCMXCIV"), "expanded capitalization and exceptions")
             profile.capitalsAsWords = false
             require(SpeechText.prepare("FACETIME", settings: profile, generation: generation, spelling: false) == "FACETIME", "capitalization control off")
+            profile.expandDates = true
+            require(SpeechText.prepare("SAT OCT 23", settings: profile, generation: generation) == "Saturday October 23", "date headings on every generation")
+            profile.expandDates = false
+            require(SpeechText.prepare("Sat Oct 23", settings: profile, generation: generation) == "Sat Oct 23", "date expansion opt-out")
+            profile.twentyFourHour = true
+            let clock = "13:05, 08:30, 00:00; 9:05 and 1:45 PM"
+            let expectedClock = generation == .leopard ? "13 oh 5, oh 8 30, zero zero zero zero; 9:05 and 1:45 PM" : clock
+            require(SpeechText.prepare(clock, settings: profile, generation: generation) == expectedClock, "24-hour correction targets Leopard and preserves ordinary times")
+            profile.twentyFourHour = false
+            require(SpeechText.prepare(clock, settings: profile, generation: generation) == clock, "24-hour opt-out preserves engine input")
         }
         for value in ["1e308", "NaN", "Infinity", "-1e308", "1e308%"] {
             let xml = "<speak><mark name='start'/><prosody rate='\(value)' volume='\(value)' pitch='\(value)'>window<break time='\(value)s'/></prosody></speak>"

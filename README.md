@@ -248,6 +248,45 @@ these:
 - OS X 10.7 Lion and OS X 10.8 Mountain Lion (Apple's InstallMacOSX downloads)
 - OS X 10.9.5 Mavericks
 
+#### iOS 10 enhanced Vocalizer downloads
+
+The iOS tab includes **iOS 10 (10.3.4)** with 37 standard enhanced voices
+from Apple's iOS 10 download catalog, including Samantha, Daniel, Thomas
+and Ting-Ting, plus 42 combined compact/premium packages, including Ava, Tom,
+Allison and Susan. Combined packages install both qualities; Premium can be
+removed while keeping Compact and downloaded again later. Choose a voice to
+download it. Downloads are checksum-verified;
+only installed voices are registered with VoiceOver. These are iOS 10 voice
+data, separate from Mavericks voices that share the same engine. iOS 10 Alex
+and the separate Siri/custom-voice catalog are not part of this download list.
+
+The included iOS 10 engine uses its bundled common data when present, or the
+compatible Mavericks common data already carried by the app.
+
+#### Panthera MacinTalk controls
+
+In Settings, open **MacinTalk settings and pronunciations**, choose the
+generation, and find **Phrasing**. **Announcement pause length** ranges from
+0 to 100 percent: 100 preserves the requested timed pauses, lower values
+shorten them, and 0 removes those inserted pauses. This does not change the
+speaking rate. **Engine phrase breaks** separately controls the voice's
+natural phrasing and breaths where supported. Settings persist per generation.
+Tiger, Leopard, Snow Leopard and Lion pass final announcement pauses to the
+engine, with no duplicate host silence. Tiger has no Alex voice; Leopard does.
+
+For newer Alex recordings, choose **Add from Files → Import Sequoia Alex
+recordings** and select the complete `Alex.SpeechVoice` bundle from your own
+Sequoia installation. Lion's engine must already be available. The recordings
+are installed separately as **Alex (Sequoia recordings, Lion engine)**;
+original Lion Alex is preserved. Both use Lion's speech controls, with a separate Sequoia Alex inflection setting
+(default 140; original Lion remains 100). No modern
+macOS engine or iOS 10 Alex engine is required for this import.
+
+For a smaller local Mac app or IPA, pass `--omit-alex` to
+`tools/package_panthera_apple.py`. This keeps the MacinTalk engines and
+acceleration. Download Leopard, Snow Leopard or Lion Alex from their voice
+pages. Use Add from Files for Sequoia recordings.
+
 ## Windows, Android and Linux
 
 On **Windows**, the Classic Voices app (in the Start menu, from

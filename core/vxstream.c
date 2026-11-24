@@ -282,8 +282,23 @@ static Vx *open_engine(const char *root, const char *asset_root, const char *key
     if (enhanced) build[bl - 1] = 0;
     snprintf(voiced, sizeof voiced, "%s/%s/voiced", root, build);
     if (enhanced) snprintf(ldir, sizeof ldir, "%s/%s/%s", asset_root, build, lang);
-    else snprintf(ldir, sizeof ldir, "%s/%s/TTSResources/%s", root, build, lang);
+    else if (strcmp(build, "ios10") == 0) {
+        // Combined projects have named compact/premium folders, not locale keys.
+        char broker[1300];
+        snprintf(ldir, sizeof ldir, "%s/ios10/%s", asset_root, lang);
+        snprintf(broker, sizeof broker, "%s/broker.hdr", ldir);
+        if (access(broker, R_OK) != 0) {
+            snprintf(ldir, sizeof ldir, "%s/ios10/%s", root, lang);
+            snprintf(broker, sizeof broker, "%s/broker.hdr", ldir);
+            if (access(broker, R_OK) != 0)
+                snprintf(ldir, sizeof ldir, "%s/ios10/TTSResources/%s", root, lang);
+        }
+    } else snprintf(ldir, sizeof ldir, "%s/%s/TTSResources/%s", root, build, lang);
     snprintf(cdir, sizeof cdir, "%s/%s/TTSResources/common", root, build);
+    // Engine-only iOS10 distributions already carry compatible common data
+    // for Mavericks premium. Reuse it when no iOS10 common folder is bundled.
+    if (strcmp(build, "ios10") == 0 && access(cdir, R_OK) != 0)
+        snprintf(cdir, sizeof cdir, "%s/mac109/common", root);
     snprintf(g_open_ldir, sizeof g_open_ldir, "%s", ldir);
     Vx *vx = vx_open(voiced, ldir, cdir, err, errlen);
     if (vx) install_native(vx, build);
@@ -1444,7 +1459,7 @@ static void lat_log(VxStream *s, const char *key, unsigned long long audio_ms, d
 }
 
 // ---- MacinTalk (Mac OS X 10.4-10.6): keys "mt104/Fred", "mt105/Alex" ...
-static int is_mt_key(const char *key) { return key[0] == 'm' && key[1] == 't' && key[2] >= '0' && key[2] <= '9'; }
+static int is_mt_key(const char *key) { return (key[0] == 'm' && key[1] == 't' && key[2] >= '0' && key[2] <= '9') || !strncmp(key,"mtios10/",8); }
 
 // A MacinTalk engine comes with the app (<root>/<gen>/MacinTalk) or was
 // added from the user's own Mac OS X files (<asset_root>/<gen>/MacinTalk).

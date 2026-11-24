@@ -12,6 +12,8 @@ import Foundation
 public struct SSMLRequest: Equatable, Sendable {
     /// Plain text, markup removed.
     public var text: String
+    /// The caller's final break, before legacy navigation trimming.
+    public var requestedTrailingPauseMs: Int = 0
     /// 1.0 is the normal rate; 2.0 is twice as fast.
     public var rateMultiplier: Double
     /// Tenths of a semitone from the voice's own pitch, the unit
@@ -65,6 +67,7 @@ public struct SSMLRequest: Equatable, Sendable {
         let prosody = ProsodyReader(ssml)
         // Pieces only when the markup parsed; otherwise the whole text, once.
         let pieces = prosody.parsed ? prosody.segments.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || $0.pauseAfterMs > 0 } : []
+        let trailingPause = Self.merged(pieces, preserveTrailingPause: true).last?.pauseAfterMs ?? 0
         let segments = pieces.isEmpty ? nil : Self.merged(pieces)
         // The plain text is only spoken when the markup gave no pieces, so the
         // system's own SSML reader -- a second parse of the same markup, on
@@ -75,6 +78,7 @@ public struct SSMLRequest: Equatable, Sendable {
                   rateMultiplier: prosody.rate.flatMap(Self.rate(_:)) ?? 1,
                   pitchTenths: prosody.pitch.flatMap(Self.pitch(_:)) ?? 0,
                   segments: nil)
+        requestedTrailingPauseMs = trailingPause
         if let segments { self.segments = segments }
         requiresLegacyParser = !prosody.parsed || prosody.requiresLegacyParser
         gain = prosody.volume.flatMap(Self.gain(_:)) ?? 1
@@ -116,16 +120,25 @@ public struct SSMLRequest: Equatable, Sendable {
         /// "\"Configure\" ,  button" -- with the comma straight after the
         /// quote, or without the quotes, "button" is another sound).
         public var pauseSpacedComma = false
+        /// Keep the caller's breaks and label text, without old Mac quoting.
+        public var preserveRequestedPauses = false
         public static let snowLeopard = VoiceOverStyle(capitalTenths: 90, deletionTenths: -75, closingSilence: true, pauseSilence: true)
         public static let leopard = VoiceOverStyle(capitalTenths: 60, deletionTenths: -75, closingSilence: false, pauseSilence: false,
                                                    pauseSpacedComma: true)
         public static let lion = VoiceOverStyle(capitalTenths: 90, deletionTenths: -60, closingSilence: false, pauseSilence: false,
                                                 pauseSpace: true)
+#if CV_IOS10_ALEX
+        public static let ios10Alex = VoiceOverStyle(capitalTenths: 90, deletionTenths: -60, closingSilence: false, pauseSilence: false,
+                                                     pauseSpace: true, preserveRequestedPauses: true)
+#endif
         public static func of(_ generation: Generation) -> VoiceOverStyle {
             switch generation {
             case .tiger, .leopard: return .leopard
             case .snowleopard: return .snowLeopard
             case .lion: return .lion
+#if CV_IOS10_ALEX
+            case .ios10Alex: return .ios10Alex
+#endif
             }
         }
     }
@@ -134,7 +147,7 @@ public struct SSMLRequest: Equatable, Sendable {
     /// on Mac OS X wrote them (the voices always ask for it); `macPauses`
     /// (PantheraSettings.macPauses): its short pauses as silences.
     public func pieces(natural: Bool, wpm: Int, clauses: Bool = false, macVoiceOver: Bool = false, macPauses: Bool = false,
-                       style: VoiceOverStyle = .snowLeopard) -> [Segment] {
+                       style: VoiceOverStyle = .snowLeopard, pausePercent: Int = 100) -> [Segment] {
         var segments = segments
         if macVoiceOver {
             for i in segments.indices {
@@ -143,9 +156,18 @@ public struct SSMLRequest: Equatable, Sendable {
             }
         }
         var parts = natural ? Self.joined(segments, silences: macPauses && style.pauseSilence,
-                                          space: macPauses && style.pauseSpace, quote: macPauses,
+                                          space: macPauses && style.pauseSpace, quote: macPauses && !style.preserveRequestedPauses,
                                           spacedComma: macPauses && style.pauseSpacedComma,
-                                          preserveLongPauses: macPauses) : segments
+                                          preserveLongPauses: macPauses,
+                                          preserveRequestedPauses: macPauses && style.preserveRequestedPauses) : segments
+        // Scale after joining so punctuation and grouping stay unchanged.
+        // Before inlinePitch: character echo's closing cues keep their timing.
+        if pausePercent != 100 {
+            for i in parts.indices {
+                parts[i].pauseAfterMs = Self.scaledPause(parts[i].pauseAfterMs, percent: pausePercent)
+                parts[i].text = Self.scaledPauseMarks(parts[i].text, percent: pausePercent)
+            }
+        }
         if macVoiceOver { parts = parts.map { Self.inlinePitch($0, around: pitchTenths, style: style) } }
         return clauses ? Self.shortened(parts, wpm: wpm, longest: Self.clauseLongest) : parts
     }
@@ -185,7 +207,8 @@ public struct SSMLRequest: Equatable, Sendable {
     /// ("\"Help\" button", "\"Documents\" ,  folder"): the quotes change how
     /// the engine says what follows.
     static func joined(_ pieces: [Segment], silences: Bool = false, space: Bool = false,
-                       quote: Bool = false, spacedComma: Bool = false, preserveLongPauses: Bool = false) -> [Segment] {
+                       quote: Bool = false, spacedComma: Bool = false, preserveLongPauses: Bool = false,
+                       preserveRequestedPauses: Bool = false) -> [Segment] {
         var fresh = false              // the last piece in `out` has not been joined to yet
         var out: [Segment] = []
         var open = false               // the last piece in `out` takes more text
@@ -222,7 +245,7 @@ public struct SSMLRequest: Equatable, Sendable {
                 open = false
             }
             let digits = !t.isEmpty && t.count <= 4 && t.allSatisfy(\.isNumber)
-            if digits && (open || out.isEmpty) {
+            if digits && !preserveRequestedPauses && (open || out.isEmpty) {
                 if out.isEmpty { out.append(Segment(text: "", pitchTenths: p.pitchTenths)) }
                 if !groups.isEmpty && gap < groupBelowMs { groups[groups.count - 1] += t } else { groups.append(t) }
                 parts += 1
@@ -245,7 +268,9 @@ public struct SSMLRequest: Equatable, Sendable {
                 // iOS VoiceOver uses 276 ms for a short label/role boundary in
                 // the captured requests. Keep its existing short-pause treatment.
                 // Explicit 250/300/500 ms pauses in the Mac traces remain timed.
-                if preserveLongPauses && last.pauseAfterMs >= 250 && last.pauseAfterMs != 276 {
+                if preserveRequestedPauses && last.pauseAfterMs > 0 {
+                    last.text += " " + Self.pauseMark(last.pauseAfterMs) + " " + t
+                } else if preserveLongPauses && last.pauseAfterMs >= 250 && last.pauseAfterMs != 276 {
                     // A timed silence does not replace the punctuation that
                     // tells MacinTalk how the following role should be phrased.
                     let separator = starts || punctuated || space ? " " : spacedComma ? " ,  " : " , "
@@ -284,6 +309,19 @@ public struct SSMLRequest: Equatable, Sendable {
     /// A pause of `ms` inside a piece's text: one private-use character, so
     /// no rewriting of words or commands can split or remove it.
     static let pauseMarkBase: UInt32 = 0xF0000
+    static func scaledPause(_ ms: Int, percent: Int) -> Int {
+        Int((Double(min(0xFFFF, max(0, ms))) * Double(min(100, max(0, percent))) / 100).rounded())
+    }
+    private static func scaledPauseMarks(_ text: String, percent: Int) -> String {
+        var result = ""
+        for scalar in text.unicodeScalars {
+            if (pauseMarkBase...pauseMarkBase + 0xFFFF).contains(scalar.value) {
+                let pause = scaledPause(Int(scalar.value - pauseMarkBase), percent: percent)
+                if pause > 0 { result += pauseMark(pause) }
+            } else { result.unicodeScalars.append(scalar) }
+        }
+        return result
+    }
     static func pauseMark(_ ms: Int) -> String {
         String(Character(Unicode.Scalar(pauseMarkBase + UInt32(min(max(ms, 0), 0xFFFF)))!))
     }
@@ -565,7 +603,7 @@ public struct SSMLRequest: Equatable, Sendable {
         min(boundedPause(a) + boundedPause(b), 1000)
     }
 
-    static func merged(_ pieces: [Segment]) -> [Segment] {
+    static func merged(_ pieces: [Segment], preserveTrailingPause: Bool = false) -> [Segment] {
         var out: [Segment] = []
         for p in pieces {
             let blank = p.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -576,7 +614,7 @@ public struct SSMLRequest: Equatable, Sendable {
             out.append(Segment(text: p.text, pauseAfterMs: boundedPause(p.pauseAfterMs), pitchTenths: p.pitchTenths))
         }
         for i in out.indices { out[i].pauseAfterMs = min(out[i].pauseAfterMs, 1000) }
-        if !out.isEmpty { out[out.count - 1].pauseAfterMs = 0 }
+        if !preserveTrailingPause && !out.isEmpty { out[out.count - 1].pauseAfterMs = 0 }
         return out
     }
 

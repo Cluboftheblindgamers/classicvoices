@@ -42,11 +42,19 @@ struct SpeechSettings: Codable, Equatable, Sendable {
     /// Vocalizer retains its existing settings and pronunciation path.
     var macinTalkCompatibility = true
     var macinTalk: [String: PantheraSettings] = [:]
+    var macinTalkInflectionOverride: [String: Int] = [:]
     var macinTalkPronunciations: [Pronunciation] = []
     var logSpokenText = false
 
-    func macinTalkSettings(_ generation: Generation) -> PantheraSettings {
-        macinTalk[generation.rawValue] ?? PantheraSettings()
+    func macinTalkSettings(_ generation: Generation, voiceKey: String? = nil) -> PantheraSettings {
+        var profile = macinTalk[generation.rawValue] ?? PantheraSettings.defaults(for: generation)
+        if let voiceKey {
+            let defaultInflection: Int? = voiceKey == "mt107/Alex-sequoia" ? 140 : nil
+            if let value = macinTalkInflectionOverride[voiceKey] ?? defaultInflection {
+                profile.inflection = min(200, max(0, value))
+            }
+        }
+        return profile
     }
 
     static let file = "settings.json"
@@ -78,6 +86,18 @@ struct SpeechSettings: Codable, Equatable, Sendable {
         resetCommandsOverride = try c.decodeIfPresent([String: Bool].self, forKey: .resetCommandsOverride) ?? [:]
         macinTalkCompatibility = try c.decodeIfPresent(Bool.self, forKey: .macinTalkCompatibility) ?? true
         macinTalk = try c.decodeIfPresent([String: PantheraSettings].self, forKey: .macinTalk) ?? [:]
+#if CV_IOS10_ALEX
+        // A partial iOS profile must use its generation's default too. Preserve
+        // every explicitly saved value, including a deliberate choice of 100.
+        if macinTalk[Generation.ios10Alex.rawValue] != nil {
+            struct InflectionField: Decodable { var inflection: Int? }
+            let fields = try c.decode([String: InflectionField].self, forKey: .macinTalk)
+            if fields[Generation.ios10Alex.rawValue]?.inflection == nil {
+                macinTalk[Generation.ios10Alex.rawValue]?.inflection = Generation.ios10Alex.defaultInflection
+            }
+        }
+#endif
+        macinTalkInflectionOverride = try c.decodeIfPresent([String: Int].self, forKey: .macinTalkInflectionOverride) ?? [:]
         macinTalkPronunciations = try c.decodeIfPresent([Pronunciation].self, forKey: .macinTalkPronunciations) ?? []
         logSpokenText = try c.decodeIfPresent(Bool.self, forKey: .logSpokenText) ?? false
     }
