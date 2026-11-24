@@ -48,6 +48,7 @@ def main():
             '-lClassicPortTest','-Xlinker','-rpath','-Xlinker','@executable_path','-o',build/name]
         with (build/(name+'-build.log')).open('w') as log:run(command,stdout=log,stderr=subprocess.STDOUT)
         env=dict(os.environ)
+        env['CV_PORT_TEST_OUTPUT']=str(build)
         if args.voice_root:env['CV_PORT_ROOT']=str(args.voice_root.resolve())
         if args.native_libraries:env['CV_PORT_NATIVE_DIR']=str(args.native_libraries.resolve())
         with (build/(name+'.log')).open('w') as log:run([build/name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=240 if name=='panthera_stress' else 90)
@@ -59,7 +60,7 @@ def main():
                     run([build/name, '--'+generation], env=env, stdout=log, stderr=subprocess.STDOUT, timeout=90)
                 print(log_path.read_text().strip(), flush=True)
 
-    run(['clang','-O2','-Icore','-Icore/mt','tests/mt_port_render.c','-Lbuild/tests',
+    run(['clang','-O2','-Icore','-Icore/mt','tests/mt_port_render.c','-L',build,
          '-lClassicPortTest','-Wl,-rpath,@executable_path','-o',build/'mt_port_render'])
 
 if __name__=='__main__':main()

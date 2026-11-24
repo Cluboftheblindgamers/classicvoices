@@ -44,13 +44,15 @@ import AVFoundation
         provider.submit(make("<speak>Dock</speak>"),voiceKey:key,settings:settings)
         let bare=collect(provider)
         precondition(live.audio.count>bare.audio.count+3000,"native pause reached the real engine")
-        let destination=URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("build/tests/\(generation.rawValue)-navigation-fixed.wav")
-        let format=AVAudioFormat(standardFormatWithSampleRate:22050,channels:1)!
-        let pcm=AVAudioPCMBuffer(pcmFormat:format,frameCapacity:AVAudioFrameCount(live.audio.count))!
-        pcm.frameLength=pcm.frameCapacity
-        live.audio.withUnsafeBufferPointer { pcm.floatChannelData![0].update(from:$0.baseAddress!,count:$0.count) }
-        let file=try AVAudioFile(forWriting:destination,settings:format.settings)
-        try file.write(from:pcm)
+        if let output = ProcessInfo.processInfo.environment["CV_PORT_TEST_OUTPUT"] {
+            let destination = URL(fileURLWithPath: output).appendingPathComponent("\(generation.rawValue)-navigation-fixed.wav")
+            let format = AVAudioFormat(standardFormatWithSampleRate: 22050, channels: 1)!
+            let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(live.audio.count))!
+            pcm.frameLength = pcm.frameCapacity
+            live.audio.withUnsafeBufferPointer { pcm.floatChannelData![0].update(from: $0.baseAddress!, count: $0.count) }
+            let file = try AVAudioFile(forWriting: destination, settings: format.settings)
+            try file.write(from: pcm)
+        }
 
         // Queue a full half-second native tail, then cancel before reading it.
         // The next uncached request must not inherit or wait for those samples.
