@@ -42,6 +42,14 @@ final class VoiceStore: @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    /// One change to the store at a time. Each install stages its files in the
+    /// store's one .incoming folder ("discard", "put", "commit"), and flush is
+    /// started from several places (each finished download, coming to the
+    /// front, the voice list): two at once ran the same job together, so one
+    /// could restart a file at offset 0 while the other committed it, putting
+    /// a truncated voice in place, or commit after the other's discard.
+    /// Recursive: flush installs and deletes under it.
+    private let changes = NSRecursiveLock()
     private var backend: Backend?
     private var lastFailure: String?
     /// "extension", "App Group" or "unavailable (reason)": for Diagnostics.
@@ -127,9 +135,9 @@ final class VoiceStore: @unchecked Sendable {
     }
 
     @discardableResult
-    private func call(_ message: [AnyHashable: Any]) throws -> [AnyHashable: Any] {
+    private func call(_ message: [AnyHashable: Any], using pinned: Backend? = nil) throws -> [AnyHashable: Any] {
         let reply: [AnyHashable: Any]?
-        switch try connect() {
+        switch try (pinned ?? connect()) {
         case .channel(_, let ch): reply = ch.callAudioUnit?(message)
         case .group(let ops): reply = ops.perform(message)
         }
@@ -174,6 +182,11 @@ final class VoiceStore: @unchecked Sendable {
 
     /// Copies a file or folder into the store at `rel`, replacing what was there.
     func install(_ local: URL, at rel: String, progress: ((Double) -> Void)? = nil) throws {
+        changes.lock(); defer { changes.unlock() }
+        try install(local, at: rel, using: connect(), progress: progress)
+    }
+
+    private func install(_ local: URL, at rel: String, using backend: Backend, progress: ((Double) -> Void)? = nil) throws {
         let fm = FileManager.default
         var files: [(URL, String)] = []  // (file, path relative to rel)
         var isDir: ObjCBool = false
@@ -191,14 +204,14 @@ final class VoiceStore: @unchecked Sendable {
         }
         let total = files.reduce(0) { $0 + ((try? fm.attributesOfItem(atPath: $1.0.path)[.size] as? Int) ?? 0) }
         var sent = 0
-        try call(["op": "discard"])
+        try call(["op": "discard"], using: backend)
         for (f, path) in files {
             let h = try FileHandle(forReadingFrom: f)
             defer { try? h.close() }
             var off = 0
             var any = false
             while let d = try h.read(upToCount: Self.chunk), !d.isEmpty || !any {
-                try call(["op": "put", "path": path, "data": d, "offset": NSNumber(value: off)])
+                try call(["op": "put", "path": path, "data": d, "offset": NSNumber(value: off)], using: backend)
                 off += d.count
                 sent += d.count
                 any = true
@@ -206,12 +219,15 @@ final class VoiceStore: @unchecked Sendable {
                 if d.isEmpty { break }
             }
         }
-        try call(["op": "commit", "path": rel])
+        try call(["op": "commit", "path": rel], using: backend)
     }
 
     func write(_ data: Data, at rel: String) throws { try call(["op": "write", "path": rel, "data": data]) }
 
-    func delete(_ rel: String) throws { try call(["op": "delete", "path": rel]) }
+    func delete(_ rel: String) throws {
+        changes.lock(); defer { changes.unlock() }
+        try call(["op": "delete", "path": rel])
+    }
 
     /// Speaks a phrase with a voice key inside the extension; nil when it worked.
     func test(_ key: String) -> String? {
@@ -259,10 +275,19 @@ final class VoiceStore: @unchecked Sendable {
     /// Takes the payloads (moved, so they must be ours), records the job and
     /// runs it now if it can. Throws if it couldn't run now; the job stays.
     func enqueue(_ job: Job, payloads: [URL], run: Bool = true) throws {
-        let dir = Self.pendingRoot.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        for p in payloads { try FileManager.default.moveItem(at: p, to: dir.appendingPathComponent(p.lastPathComponent)) }
-        try JSONEncoder().encode(job).write(to: dir.appendingPathComponent("job.json"))
+        changes.lock(); defer { changes.unlock() }
+        let id = UUID().uuidString
+        let root = Self.pendingRoot
+        let dir = root.appendingPathComponent(".preparing-" + id)
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        var published = false
+        defer { if !published { try? fm.removeItem(at: dir) } }
+        for p in payloads { try fm.copyItem(at: p, to: dir.appendingPathComponent(p.lastPathComponent)) }
+        try JSONEncoder().encode(job).write(to: dir.appendingPathComponent("job.json"), options: .atomic)
+        try fm.moveItem(at: dir, to: root.appendingPathComponent(id))
+        published = true
+        for p in payloads { try? fm.removeItem(at: p) }
         if run { try flush() }
     }
 
@@ -278,6 +303,7 @@ final class VoiceStore: @unchecked Sendable {
 
     /// Finishes every recorded job it can; stops at the first that fails.
     func flush(progress: ((Double) -> Void)? = nil) throws {
+        changes.lock(); defer { changes.unlock() }  // a second flush finds the jobs this one finished gone
         let fm = FileManager.default
         let jobs = ((try? fm.contentsOfDirectory(atPath: Self.pendingRoot.path)) ?? []).sorted()
         var ran = false
@@ -285,15 +311,19 @@ final class VoiceStore: @unchecked Sendable {
             let dir = Self.pendingRoot.appendingPathComponent(name)
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("job.json")),
                   let job = try? JSONDecoder().decode(Job.self, from: data) else {
-                try? fm.removeItem(at: dir); continue
+                // Incomplete publication or damaged manifest: retain its payloads for recovery.
+                continue
             }
-            for rel in job.deletes { try delete(rel) }
+            // Keep the entire job including combined voice pairs and their
+            // markers on one backend even when the retry deadline elapses.
+            let backend = try connect()
+            for rel in job.deletes { try call(["op": "delete", "path": rel], using: backend) }
             for (i, item) in job.items.enumerated() {
-                try install(dir.appendingPathComponent(item.local), at: item.dest) { p in
+                try install(dir.appendingPathComponent(item.local), at: item.dest, using: backend) { p in
                     progress?((Double(i) + p) / Double(job.items.count))
                 }
             }
-            for f in job.files { try write(f.data, at: f.dest) }
+            for f in job.files { try call(["op": "write", "path": f.dest, "data": f.data], using: backend) }
             try? fm.removeItem(at: dir)
             ran = true
         }

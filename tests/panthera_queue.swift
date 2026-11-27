@@ -50,6 +50,18 @@ private final class ResultBox: @unchecked Sendable { var accepted = true }
         precondition(PCMQueue.supersede(except: other))
         precondition(!queue.isCurrent(first) && other.isActive)
         other.cancel()
+        // Completed does not mean consumed; supersession must drop unread PCM.
+        let buffered = queue.begin()
+        precondition(samples.withUnsafeBufferPointer { queue.write($0.baseAddress!, count: $0.count, token: buffered) })
+        queue.finish(buffered)
+        _ = PCMQueue.supersede(except: other)
+        let stale = output.withUnsafeMutableBufferPointer { queue.read(into: $0.baseAddress!, max: $0.count, wait: 0, expectedToken: buffered) }
+        precondition(stale.frames == 0 && stale.complete)
+        let next = queue.begin()
+        precondition(samples.withUnsafeBufferPointer { queue.write($0.baseAddress!, count: $0.count, token: next) })
+        let oldRead = output.withUnsafeMutableBufferPointer { queue.read(into: $0.baseAddress!, max: $0.count, wait: 0, expectedToken: buffered) }
+        precondition(oldRead.frames == 0 && oldRead.complete)
+        queue.cancel()
 
         var job = SpeechJob(); job.text = "window"
         var settings = SpeechSettings()

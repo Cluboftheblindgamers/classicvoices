@@ -35,7 +35,9 @@ enum X86Recompiler {
             let ln = pySplit(String(raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""))
             if ln.count != 2 && ln.count != 3 { continue }
             guard let im = dump.image(ln[0]) else { continue }
-            let addr = try pyInt(ln[1], 16) + im.slide
+            // 32-bit, as the loader slid it: Tiger's SpeechDictionary is prebound
+            // at 0x96d0c000 and loaded far below, so its slide wraps around
+            let addr = (try pyInt(ln[1], 16) + im.slide) & 0xFFFF_FFFF
             if dump.textOf(addr) != nil {
                 let n = ln.count == 3 ? try pyInt(ln[2], 10) : 1
                 if let old = starts[addr] {
@@ -161,7 +163,11 @@ enum X86Recompiler {
         let used = Set(order.map { dump.textOf($0.start)!.image })
         var ranges: [(String, Int, Int, UInt64)] = []
         let stubKinds: Set<Int> = [S_SYMBOL_STUBS, S_NON_LAZY_SYMBOL_POINTERS, S_LAZY_SYMBOL_POINTERS]
-        for s in dump.texts + dump.sects.filter({ stubKinds.contains($0.flags & 0xFF) }) where used.contains(s.image) {
+        // Some older Mach-O images have empty stub sections (Tiger's MacinTalk).
+        // An empty range cannot validate code and is rejected by the runtime
+        // matcher (mt_native.c set_matches), which left the whole set unused.
+        for s in dump.texts + dump.sects.filter({ stubKinds.contains($0.flags & 0xFF) })
+        where used.contains(s.image) && s.size > 0 {
             let bytes = try dump.read(s.addr, s.size)
             var h: UInt64 = 0xcbf2_9ce4_8422_2325
             for byte in bytes { h = (h ^ UInt64(byte)) &* 0x100_0000_01b3 }
@@ -306,7 +312,9 @@ enum X86Recompiler {
                     break
                 }
             }
-            texts = sects.filter { $0.sect == "__text" && $0.seg == "__TEXT" }
+            // code: __text, and Tiger's __textcoal_nt (C++ inline functions its
+            // synthesizer calls millions of times a sentence)
+            texts = sects.filter { ["__text", "__textcoal_nt"].contains($0.sect) && $0.seg == "__TEXT" }
         }
 
         func image(_ name: String) -> Image? { images.first { $0.name == name } }

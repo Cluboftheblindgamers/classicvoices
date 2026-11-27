@@ -1,0 +1,31 @@
+name: Panthera source regression
+on:
+  push:
+    paths:
+      - 'core/**'
+      - 'ios/**'
+      - 'tests/**'
+      - 'tools/**'
+      - '.github/workflows/panthera-regression.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'ios/**'
+      - 'tests/**'
+      - 'tools/**'
+      - '.github/workflows/panthera-regression.yml'
+  workflow_dispatch:
+
+jobs:
+  mac-source:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - name: Build the public static engine (no firmware required)
+        run: |
+          mkdir -p build/gen{,3,4,5,7,70,10} build/mtgen{104,105,106,107}
+          xcodegen generate -q --spec ios/project.yml
+          xcodebuild -project ios/ClassicVoices.xcodeproj -target EngineCodeMacPublic -configuration Release ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO SYMROOT="$PWD/build/mac-derived/Build/Products" OBJROOT="$PWD/build/mac-intermediates" build
+      - name: Run source regression tests
+        run: python3 tools/check_panthera_port.py --build-dir build/ci-regression

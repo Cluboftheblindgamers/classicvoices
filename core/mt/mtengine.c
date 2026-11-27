@@ -773,6 +773,7 @@ static int speak_one(MtEngine *e, const char *text, size_t len, MtPcmCallback cb
             e->stop_deadline = 0;
             if (stopped) { snprintf(e->err, sizeof e->err, "MacinTalk was slow to stop; it reopens for the next utterance"); return -1; }
             mt_log("engine faulted at %u frames", pos);
+            if (!e->err[0]) snprintf(e->err, sizeof e->err, "MacinTalk faulted while producing audio");
             return -1;
         }
         uint32_t sl = mt_audio_slices();
@@ -785,6 +786,7 @@ static int speak_one(MtEngine *e, const char *text, size_t len, MtPcmCallback cb
         // pause a while paging in voice data on a phone.
         else if (now_s() - last_change > 5.0) {
             mt_log("gave up waiting at %u frames", pos);
+            snprintf(e->err, sizeof e->err, "MacinTalk timed out waiting for audio");
 #ifdef X86_TRACE
             trace_mt = e->m;
             x86_trace_threads(show_thread);

@@ -18,6 +18,12 @@ typedef int (*VxPcmCallback)(void *ctx, const int16_t *samples, size_t count);
 // common_dir: TTSResources/common. Returns NULL and fills err on failure.
 Vx *vx_open(const char *voiced_path, const char *lang_dir, const char *common_dir,
             char *err, size_t errlen);
+// As vx_open, with `prepare` called once the engine's code is loaded and
+// before any of it runs. Recompiled code attached there (vx_set_native) runs
+// the engine's own setup too (ttsInitialize, ttsOpen), which otherwise takes
+// most of a voice's first utterance on the interpreter. NULL: as vx_open.
+Vx *vx_open_prepared(const char *voiced_path, const char *lang_dir, const char *common_dir,
+                     void (*prepare)(Vx *vx, void *ctx), void *ctx, char *err, size_t errlen);
 void vx_close(Vx *vx);
 
 // 0 on success (including cancellation), engine error code otherwise.

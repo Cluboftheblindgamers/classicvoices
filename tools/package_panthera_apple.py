@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import zipfile
 import yaml
+from wrap_legacy_engines import MACHO, wrap
 
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = 'org.pantheraspeech.classicvoices.port'
@@ -28,8 +29,11 @@ def run(args, **kwargs):
     subprocess.run([str(x) for x in args], check=True, cwd=ROOT, **kwargs)
 
 def configure_bundle(bundle, platform, extension, build_number=None, short_version=None):
+    defaults = yaml.safe_load((ROOT/'ios/project.yml').read_text())['targetTemplates']['Engine']['settings']['base']
     if build_number is None:
-        build_number = max(9, int(subprocess.check_output(['git', 'rev-list', '--count', 'HEAD'], cwd=ROOT, text=True)))
+        build_number = int(defaults['CURRENT_PROJECT_VERSION'])
+    if short_version is None:
+        short_version = str(defaults['MARKETING_VERSION'])
     if not 1 <= build_number <= 65535:
         raise ValueError('Build number must be between 1 and 65535')
     path = bundle / ('Contents/Info.plist' if platform == 'mac' else 'Info.plist')
@@ -77,6 +81,7 @@ def main():
     parser.add_argument('--voices', type=Path, help='Classic-format Voices folder, copied into the private app')
     parser.add_argument('--macintalk', type=Path, help='mt104..mt107 folders, copied over the voice data')
     parser.add_argument('--native', type=Path, help='Mac-only folder of locally built native .so libraries')
+    parser.add_argument('--samples', type=Path, help='add locally rendered .m4a previews to the bundled samples')
     parser.add_argument('--omit-alex', action='store_true', help='leave Alex recordings out of the app while keeping the engines')
     parser.add_argument('--legacy-engine-resources', action='store_true',
                         help='package iOS guest engines as data resources for third-party signers')
@@ -85,7 +90,7 @@ def main():
     parser.add_argument('--skip-build', action='store_true')
     parser.add_argument('--no-archive', action='store_true', help='Mac only: produce the app without an additional ZIP')
     parser.add_argument('--require-vocalizer',action='store_true',help='refuse a package missing any standard Vocalizer engine or compact voice set')
-    parser.add_argument('--build-number',type=int,help='defaults to source commit count; advances the AU cache version')
+    parser.add_argument('--build-number',type=int,help='defaults to the version in ios/project.yml; advances the AU cache version')
     parser.add_argument('--short-version',help='optional user-facing app version, applied to app and extension')
     parser.add_argument('--identity-prefix',default=PREFIX,help='separate app and voice identity for a private preview')
     parser.add_argument('--app-group',help='defaults to the port group or a separate group for a custom identity')
@@ -93,6 +98,9 @@ def main():
     parser.add_argument('--subtype',default=SUBTYPE,help='four ASCII characters for a separate Audio Unit component')
     parser.add_argument('--experimental-ios10-alex',action='store_true',help='enable the experimental ARM32 MacinTalk backend')
     args = parser.parse_args()
+    extra_samples = sorted(args.samples.glob('*.m4a')) if args.samples else []
+    if args.samples and not extra_samples:
+        parser.error('--samples must point to a directory containing .m4a previews')
     if args.no_archive and args.platform != 'mac': parser.error('--no-archive is Mac-only')
     if args.legacy_engine_resources and args.platform != 'ios':
         parser.error('--legacy-engine-resources is iOS-only')
@@ -118,7 +126,10 @@ def main():
         if isinstance(value, list): return [str((ROOT/'ios'/x).resolve()) if key=='sources' and isinstance(x,str) else fix(x,key) for x in value]
         if isinstance(value, str):
             if key in ('path','INFOPLIST_FILE','SWIFT_OBJC_BRIDGING_HEADER') and not value.startswith('$'): return str((ROOT/'ios'/value).resolve())
-            if key in ('HEADER_SEARCH_PATHS','LIBRARY_SEARCH_PATHS'): return value.replace('$(SRCROOT)/../',str(ROOT)+'/').replace('$(SRCROOT)',str(ROOT/'ios'))
+            if key in ('HEADER_SEARCH_PATHS','LIBRARY_SEARCH_PATHS'):
+                # Quoted: Xcode splits a literal search path at spaces ("Classic Voices - x" gave -I-).
+                path=value.replace('$(SRCROOT)/../',str(ROOT)+'/').replace('$(SRCROOT)',str(ROOT/'ios'))
+                return '"'+path+'"' if ' ' in path and not path.startswith('"') else path
         return value
     if args.platform == 'mac':
         # Mac postbuild scripts package compiler sources relative to ios/.
@@ -160,13 +171,30 @@ def main():
         if '_'+expected+'.' not in principal:
             raise SystemExit('The compiled preview lacks its isolated module namespace; rebuild without --skip-build.')
     shutil.copytree(original, app, symlinks=True)
+    if args.platform == 'mac':
+        # xcodebuild registers every Mac app it builds with LaunchServices. The
+        # derived copy keeps the upstream identifiers and an unsigned speech
+        # extension; only the configured copy is the private app, so the system
+        # is told to forget the derived one (harmless if it was not registered).
+        lsregister = ('/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/'
+                      'LaunchServices.framework/Versions/Current/Support/lsregister')
+        subprocess.run([lsregister, '-u', str(original)], cwd=ROOT,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if extra_samples:
+        samples = app / ('Contents/Resources/Samples' if args.platform == 'mac' else 'Samples')
+        samples.mkdir(parents=True, exist_ok=True)
+        for sample in extra_samples:
+            shutil.copyfile(sample, samples / sample.name)
     extension = app / ('Contents/PlugIns/Synth.appex' if args.platform=='mac' else 'PlugIns/Synth.appex')
     resources = extension / ('Contents/Resources' if args.platform=='mac' else '')
     voices = resources/'Voices';voices.mkdir(parents=True,exist_ok=True)
     copy_data(args.voices, voices, omit_alex=args.omit_alex)
     copy_data(args.macintalk, voices, macintalk_only=True, omit_alex=args.omit_alex)
     if args.native and args.platform=='mac':
-        shutil.copytree(args.native, resources/'Native', dirs_exist_ok=True,copy_function=shutil.copyfile)
+        # only the libraries the extension loads (cvnative_*.so, cvmtnative_*.so): the folder they
+        # were built in can hold compiler leftovers (Build 29 shipped Native/mt104_table.c.o)
+        native = resources/'Native';native.mkdir(parents=True,exist_ok=True)
+        for library in sorted(args.native.glob('cv*native_*.so')):shutil.copyfile(library, native/library.name)
     if args.settings:
         settings = json.loads(args.settings.read_text())
         if settings.get('format')=='classicvoices-panthera-settings': settings=settings['settings']
@@ -211,11 +239,11 @@ def main():
         for path in resources.rglob('*'):
             if not path.is_file():continue
             with path.open('rb') as f: magic=f.read(4)
-            if magic not in [bytes.fromhex(x) for x in ['cafebabe','feedface','cefaedfe','feedfacf','cffaedfe']]:continue
+            if magic not in MACHO:continue
             if args.legacy_engine_resources and path.is_relative_to(voices):
                 # The host reads these images itself. Keep their original bytes
                 # behind the header understood by core/engine_resource.h.
-                path.write_bytes(b'CVENGINE' + path.read_bytes())
+                wrap(path)
                 continue
             # Stage bare Mach-O files so codesign cannot mistake a surrounding
             # SpeechDictionary folder for an application bundle.

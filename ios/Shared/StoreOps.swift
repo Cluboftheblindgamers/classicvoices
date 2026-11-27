@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Operations on a voice store, keyed by a message dictionary's "op". The
 /// extension runs them on its own store for the app (FileChannel); the app
@@ -46,13 +47,28 @@ final class StoreOps {
             } catch { return fail(error.localizedDescription) }
 
         // Moves .incoming/<path> into place, replacing what was there (a
-        // link's target in the App Group included).
+        // link's target in the App Group included). What was installed is
+        // only deleted once the new copy is in place: with nothing staged (an
+        // empty folder, or another install's "discard" in between) or a
+        // failed move, the installed voice stays as it was.
         case "commit":
             guard let u = url(message), let src = url(message, under: incoming) else { return fail("bad commit") }
+            guard (try? fm.destinationOfSymbolicLink(atPath: src.path)) != nil || fm.fileExists(atPath: src.path) else {
+                return fail("Nothing arrived to install as \(u.lastPathComponent); what was installed is unchanged.")
+            }
             do {
-                try removeItem(u)
                 try fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try fm.moveItem(at: src, to: u)
+                if (try? fm.destinationOfSymbolicLink(atPath: u.path)) != nil || fm.fileExists(atPath: u.path) {
+                    // Atomic swap: interruption cannot leave the installed path missing.
+                    // Both paths are in this store. The old item (possibly a legacy
+                    // group link) is now staged where the incoming file was.
+                    guard renameatx_np(AT_FDCWD, src.path, AT_FDCWD, u.path, UInt32(RENAME_SWAP)) == 0 else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    try? removeItem(src)
+                } else {
+                    try fm.moveItem(at: src, to: u)
+                }
                 return ["ok": true]
             } catch { return fail(error.localizedDescription) }
 
@@ -134,9 +150,12 @@ final class StoreOps {
                     .replacingOccurrences(of: "<", with: "&lt;")
                     .replacingOccurrences(of: ">", with: "&gt;")
                 let provider = MacinTalkProvider()
-                defer { provider.cancel() }
                 let job = SpeechJob.from(ssml: "<speak>\(text)</speak>", voiceKey: key, settings: settings)
-                provider.submit(job, voiceKey: key, settings: settings)
+                let owner = VoiceEngine.speechOwner
+                let token = owner.begin(onSuperseded: { provider.cancel() }) {
+                    provider.submit(job, voiceKey: key, settings: settings)
+                }
+                defer { owner.cancel(token) }
                 let start = DispatchTime.now().uptimeNanoseconds
                 var frames = 0, done = false
                 var buffer = [Float](repeating: 0, count: 4096)
@@ -152,19 +171,33 @@ final class StoreOps {
             }
             guard let stream = VoiceEngine.shared.stream else { return fail("no engine") }
             let t0 = Date()
-            vxs_set_rules_pack(stream, nil)
-            vxs_start(stream, key, message["text"] as? String ?? "Testing.", 100, 100, -1, 0)
+            // A request of its own on the shared stream (VoiceEngine.owner):
+            // if VoiceOver speaks meanwhile, the test stops reading rather than
+            // taking VoiceOver's audio.
+            let owner = VoiceEngine.shared.owner
+            let token = owner.begin(onSuperseded: { VoiceEngine.shared.cancel() }) {
+                vxs_set_rules_pack(stream, nil)
+                vxs_start(stream, key, message["text"] as? String ?? "Testing.", 100, 100, -1, 0)
+            }
+            defer { owner.cancel(token) }
             var buf = [Float](repeating: 0, count: 4096)
             var frames = 0
             var done: Int32 = 0
+            var superseded = false
             while done == 0 && Date().timeIntervalSince(t0) < 20 {
-                let k = buf.withUnsafeMutableBufferPointer { vxs_read(stream, $0.baseAddress!, 4096, &done) }
-                frames += Int(k)
+                var k = 0
+                switch owner.access(token, { buf.withUnsafeMutableBufferPointer { vxs_read(stream, $0.baseAddress!, 4096, &done) } }) {
+                case .granted(let read): k = read
+                case .changing: break
+                case .superseded: done = 1; superseded = true
+                }
+                frames += k
                 if k == 0 && done == 0 { usleep(2000) }
             }
-            return ["rc": frames > 0 ? 0 : -1, "audioMs": Double(frames) * 1000 / 22050,
-                    "totalMs": Date().timeIntervalSince(t0) * 1000,
-                    "error": frames > 0 ? "" : String(cString: vxs_last_error(stream))]
+            let error = superseded ? "Voice test superseded" : (done == 0 ? "Voice test timed out" : String(cString: vxs_last_error(stream)))
+            return ["rc": done != 0 && frames > 0 && error.isEmpty ? 0 : -1,
+                    "audioMs": Double(frames) * 1000 / 22050,
+                    "totalMs": Date().timeIntervalSince(t0) * 1000, "error": error]
 
         // Developer probe: how much address space can this process still map?
         case "vmprobe":

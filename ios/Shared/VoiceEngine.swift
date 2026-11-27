@@ -623,6 +623,7 @@ struct SpeechJob: Sendable {
         parser.dictionary = phonemes == nil ? nil : dictionary
         parser.exactPitch = exactPitch || MacinTalkCompatibility.generation(for: voiceKey ?? "") != nil
         parser.phonemes = phonemes
+        parser.vocalizerRateBoost = settings?.vocalizerRateBoost == true && !parser.exactPitch && voiceKey?.hasPrefix("mt") != true
         if let voiceKey, let settings {
             parser.prepareText = { MacinTalkCompatibility.prepare($0, voiceKey: voiceKey, settings: settings, spelling: $1) }
             if settings.macinTalkCompatibility, let generation = MacinTalkCompatibility.generation(for: voiceKey) {
@@ -659,6 +660,12 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
     var dictionary: CommunityDictionary?  // the community dictionary, applied before the rules
     var exactPitch = false
     var pausePercent = 100
+    var vocalizerRateBoost = false
+
+    private func boostedRate(_ rate: Int) -> Int {
+        guard vocalizerRateBoost, rate > 100 else { return rate }
+        return min(400, 100 + 2 * (rate - 100))
+    }
     var phonemes: ((String, Bool) -> String?)?
     // prosody currently in effect while walking the tree
     private var current = (rate: 100, pitch: 100, volume: -1)
@@ -716,7 +723,7 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
             case .gap: if let c = out.last, !c.isWhitespace { out += " " }
             case .pitch(let p):
                 out += exactPitch ? "\u{1b}\\pitchpct=\(p)\\" : "\u{1b}\\pitch=\(vxs_engine_pitch(Int32(min(p, 1000))))\\"
-            case .rate(let r): out += "\u{1b}\\rate=\(min(max(r, exactPitch ? 10 : 50), 400))\\"  // MacinTalk goes slower
+            case .rate(let r): out += "\u{1b}\\rate=\(min(max(boostedRate(r), exactPitch ? 10 : 50), 400))\\"  // MacinTalk goes slower
             case .volume(let v): out += "\u{1b}\\vol=\(min(max(v < 0 ? 80 : v, 0), 100))\\"
             case .spell(let on):
                 if on != spell { out += on ? "\u{1b}\\tn=spell\\" : "\u{1b}\\tn=normal\\" }
@@ -803,7 +810,7 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
         if !captured {
             // The utterance's baseline is the prosody around its first text;
             // later changes go inline (VoiceOver lowers pitch for just a word or two).
-            (job.rate, job.volume) = (current.rate, current.volume)
+            (job.rate, job.volume) = (boostedRate(current.rate), current.volume)
             emitted.rate = current.rate
             emitted.volume = current.volume
             captured = true
@@ -871,10 +878,83 @@ private final class SSMLParser: NSObject, XMLParserDelegate {
     }
 }
 
+/// Which request an engine stream is speaking for. The extension has one
+/// Vocalizer stream, but the system can hold several audio units of it at
+/// once (a new unit after an unlock while the old one is never cancelled, the
+/// app's own unit beside VoiceOver's). MacinTalk keeps each unit's audio apart
+/// with PCMQueue's tokens; this does the same for the shared stream: only the
+/// request the stream is speaking reads its audio and bookmarks or cancels it,
+/// so a superseded unit's late cancel or render cannot silence the current
+/// request or take its audio. (Before, a late cancel from another unit
+/// silenced the whole current request, and each late render took its audio.)
+final class StreamOwner: @unchecked Sendable {
+    enum Access<T> {
+        case granted(T)
+        case changing    // a new request is replacing the stream's: nothing to read yet
+        case superseded  // the stream speaks for another request (or none): this one is over
+    }
+    private struct State { var owner: UInt64 = 0; var changing = false; var issued: UInt64 = 0 }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    /// One start or cancel at a time, so a cancel can't stop a request that
+    /// started after it looked.
+    private let requests = NSLock()
+    private var stopCurrent: (() -> Void)?
+
+    func configure(_ body: () -> Void) {
+        requests.lock(); defer { requests.unlock() }
+        body()
+    }
+
+    /// Starts a request with `start`. Nothing reads the stream while `start`
+    /// replaces what it was speaking; afterwards only the returned token does.
+    /// `publish` receives the token first, so its unit never sees itself
+    /// superseded in between.
+    @discardableResult
+    func begin(publish: (UInt64) -> Void = { _ in }, onSuperseded: @escaping () -> Void = {}, _ start: () -> Void) -> UInt64 {
+        requests.lock(); defer { requests.unlock() }
+        let token = state.withLockUnchecked { s -> UInt64 in
+            s.issued &+= 1
+            s.owner = 0
+            s.changing = true
+            return s.issued
+        }
+        stopCurrent?()
+        stopCurrent = onSuperseded
+        publish(token)
+        start()
+        state.withLockUnchecked { s in s.owner = token; s.changing = false }
+        return token
+    }
+
+    /// Stops the stream with `stop` only while it still speaks for `token`.
+    func cancel(_ token: UInt64) {
+        requests.lock(); defer { requests.unlock() }
+        let current = state.withLockUnchecked { s -> Bool in
+            guard token != 0, s.owner == token else { return false }
+            s.owner = 0
+            return true
+        }
+        if current { stopCurrent?(); stopCurrent = nil }
+    }
+
+    /// Runs `body` (a read of the stream) only for the request it speaks for.
+    /// Cheap and non-blocking: render threads call it.
+    func access<T>(_ token: UInt64, _ body: () -> T) -> Access<T> {
+        state.withLockUnchecked { s in
+            if s.changing && s.issued == token { return .changing }
+            guard token != 0, s.owner == token else { return .superseded }
+            return .granted(body())
+        }
+    }
+}
+
 /// One engine stream shared by everything in the process.
 final class VoiceEngine {
     static let shared = VoiceEngine()
     let stream: OpaquePointer?
+    /// Which request may read and cancel `stream` (StreamOwner).
+    static let speechOwner = StreamOwner()
+    var owner: StreamOwner { Self.speechOwner }
 
     init() {
         if let root = VoiceCatalog.root {
@@ -967,7 +1047,9 @@ final class VoiceEngine {
 
     func preload(_ voiceKey: String, rulesPack: String? = nil) {
         guard let stream else { return }
-        vxs_set_rules_pack(stream, rulesPack)
-        vxs_preload(stream, voiceKey)
+        owner.configure {
+            vxs_set_rules_pack(stream, rulesPack)
+            vxs_preload(stream, voiceKey)
+        }
     }
 }

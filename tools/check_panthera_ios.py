@@ -31,7 +31,9 @@ def main():
             if key in ('path', 'INFOPLIST_FILE', 'SWIFT_OBJC_BRIDGING_HEADER') and not value.startswith('$'):
                 return str((ios / value).resolve())
             if key in ('HEADER_SEARCH_PATHS', 'LIBRARY_SEARCH_PATHS'):
-                return value.replace('$(SRCROOT)/../', str(ROOT) + '/').replace('$(SRCROOT)', str(ios))
+                # Quoted: Xcode splits a literal search path at spaces ("Classic Voices - x" gave -I-).
+                path = value.replace('$(SRCROOT)/../', str(ROOT) + '/').replace('$(SRCROOT)', str(ios))
+                return '"' + path + '"' if ' ' in path and not path.startswith('"') else path
         return value
 
     directory = ROOT / 'build/ios-check'

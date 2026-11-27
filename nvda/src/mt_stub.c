@@ -15,10 +15,20 @@ MtEngine *mte_open(const char *root, char *err, size_t errlen) {
     snprintf(err, errlen, "MacinTalk voices are not part of this add-on; use Panthera Speech");
     return NULL;
 }
+// vxstream.c opens MacinTalk through mte_open_phrasing and sets its voice
+// options; without these two the Linux, Android and Windows builds don't link.
+MtEngine *mte_open_phrasing(const char *root, int phrasing, char *err, size_t errlen) {
+    (void)phrasing;
+    return mte_open(root, err, errlen);
+}
 void mte_set_extra_voices(MtEngine *e, const char *dir) { (void)e; (void)dir; }
 void mte_set_reset_commands(MtEngine *e, int on) { (void)e; (void)on; }
 void mte_set_24_hour(MtEngine *e, int on) { (void)e; (void)on; }
 void mte_set_modern_rate(MtEngine *e, int on) { (void)e; (void)on; }
+void mte_set_voice_options(MtEngine *e, int wpm, int inflection, int expand_abbreviations,
+                           int volume_milli, int pitch_tenths) {
+    (void)e; (void)wpm; (void)inflection; (void)expand_abbreviations; (void)volume_milli; (void)pitch_tenths;
+}
 void mte_set_mark_callback(MtEngine *e, MtMarkCallback cb) { (void)e; (void)cb; }
 int mte_prepare(MtEngine *e, const char *voice) { (void)e; (void)voice; return -1; }
 void mte_close(MtEngine *e) { (void)e; }

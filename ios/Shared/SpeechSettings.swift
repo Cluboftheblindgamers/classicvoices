@@ -24,6 +24,8 @@ struct SpeechSettings: Codable, Equatable, Sendable {
     /// MacinTalk: a rate speaks at the words per minute today's Alex speaks
     /// at, instead of a percent of the voice's own default rate.
     var modernRate = true
+    /// Vocalizer reaches its native 400% limit at a requested rate of 250%.
+    var vocalizerRateBoost = false
     /// The voices shorten a pause the faster they speak: on, a pause VoiceOver
     /// or an app asks for lasts as long at any rate (vxs_set_steady_pauses).
     var steadyPauses = true
@@ -76,6 +78,7 @@ struct SpeechSettings: Codable, Equatable, Sendable {
         resetCommands = try c.decodeIfPresent(Bool.self, forKey: .resetCommands) ?? resetCommands
         twentyFourHour = try c.decodeIfPresent(Bool.self, forKey: .twentyFourHour) ?? twentyFourHour
         modernRate = try c.decodeIfPresent(Bool.self, forKey: .modernRate) ?? modernRate
+        vocalizerRateBoost = try c.decodeIfPresent(Bool.self, forKey: .vocalizerRateBoost) ?? vocalizerRateBoost
         steadyPauses = try c.decodeIfPresent(Bool.self, forKey: .steadyPauses) ?? steadyPauses
         spellingPauses = try c.decodeIfPresent(Bool.self, forKey: .spellingPauses) ?? spellingPauses
         spellLowercase = try c.decodeIfPresent(Bool.self, forKey: .spellLowercase) ?? spellLowercase

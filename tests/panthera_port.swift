@@ -140,6 +140,22 @@ import Foundation
         let newVocalizer = SpeechJob.from(ssml: xml, voiceKey: "ios6/en-US", settings: settings)
         require(oldVocalizer.text == newVocalizer.text && oldVocalizer.rate == newVocalizer.rate && oldVocalizer.pitch == newVocalizer.pitch, "Vocalizer parser parity")
 
+        var boostedSettings = settings
+        require(!SpeechSettings.decode(Data("{}".utf8))!.vocalizerRateBoost, "legacy settings default to boost off")
+        boostedSettings.vocalizerRateBoost = true
+        require(SpeechSettings.decode(boostedSettings.encoded())!.vocalizerRateBoost, "boost setting persists")
+        for (request, expected) in [(50, 50), (100, 100), (150, 200), (200, 300), (250, 400), (400, 400)] {
+            let ssml = "<speak><prosody rate='\(request)%'>test</prosody></speak>"
+            let normal = SpeechJob.from(ssml: ssml, voiceKey: "ios6/en-GB", settings: settings)
+            let boosted = SpeechJob.from(ssml: ssml, voiceKey: "ios6/en-GB", settings: boostedSettings)
+            require(normal.rate == request && boosted.rate == expected, "Vocalizer boost rate \(request)")
+            require(normal.text == boosted.text && normal.pitch == boosted.pitch && normal.volume == boosted.volume, "boost preserves text, pitch and volume")
+            let macNormal = SpeechJob.from(ssml: ssml, voiceKey: "mt106/Alex", settings: settings)
+            let macBoost = SpeechJob.from(ssml: ssml, voiceKey: "mt106/Alex", settings: boostedSettings)
+            require(macNormal.rate == macBoost.rate && macNormal.macinTalkWPM == macBoost.macinTalkWPM && macNormal.text == macBoost.text, "MacinTalk unaffected")
+        }
+        let boostedNested = SpeechJob.from(ssml: "<speak>one <prosody rate='150%'>two</prosody> three</speak>", voiceKey: "ios10e/en-GB", settings: boostedSettings)
+        require(boostedNested.rate == 100 && boostedNested.text.contains("\\rate=200\\") && boostedNested.text.contains("\\rate=100\\"), "boost maps inline rate and restores normal rate")
         require(mte_numbers_check() == 0, "number corpus")
         require(mte_volume_milli(90, "snowleopard", "Alex") == 1460, "Alex normalization")
         require(mte_volume_milli(90, "lion", "Alex") == 1190, "Lion normalization")

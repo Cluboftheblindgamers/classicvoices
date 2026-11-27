@@ -66,7 +66,7 @@ final class PCMQueue: @unchecked Sendable {
         let others = all.compactMap(\.queue).filter { $0 !== mine }
         registry.unlock()
         var any = false
-        for q in others where q.isActive { any = q.cancel(reason: "superseded by another unit") || any }
+        for q in others { any = q.cancel(reason: "superseded by another unit") || any }
         return any
     }
 
@@ -172,13 +172,16 @@ final class PCMQueue: @unchecked Sendable {
     /// speech renderer treats every buffer it pulls as full, so a short one
     /// is played with whatever was left in the rest of it.  That was the
     /// buzz heard at every VoiceOver rate but 50% on the first Mac test.
-    func read(into out: UnsafeMutablePointer<Float>, max: Int, wait: TimeInterval) -> (frames: Int, complete: Bool) {
+    func read(into out: UnsafeMutablePointer<Float>, max: Int, wait: TimeInterval, expectedToken: UInt64? = nil) -> (frames: Int, complete: Bool) {
         condition.lock(); defer { condition.unlock() }
+        let current = expectedToken ?? token
+        guard token == current else { return (0, true) }
         let asked = Date()
         if count < max && !finished {
             let deadline = Date(timeIntervalSinceNow: wait)
-            while count < max && !finished && condition.wait(until: deadline) {}
+            while token == current && count < max && !finished && condition.wait(until: deadline) {}
         }
+        guard token == current else { return (0, true) }
         longestWait = Swift.max(longestWait, Date().timeIntervalSince(asked))
         let n = min(max, count)
         // Short while more is still coming: the rest of this buffer plays as

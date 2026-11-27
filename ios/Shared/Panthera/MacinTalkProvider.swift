@@ -48,7 +48,8 @@ final class MacinTalkProvider: @unchecked Sendable {
 
     func supersedeOtherRequests() { _ = PCMQueue.supersede(except: pcm) }
 
-    func submit(_ job: SpeechJob, voiceKey: String, settings: SpeechSettings) {
+    @discardableResult
+    func submit(_ job: SpeechJob, voiceKey: String, settings: SpeechSettings) -> UInt64 {
         let start = Self.now()
         EngineWatch.requestArrived()
         supersedeOtherRequests()
@@ -71,7 +72,7 @@ final class MacinTalkProvider: @unchecked Sendable {
                     }
                 }
             }
-            return
+            return token
         }
         Self.queue.async { [self] in
             guard pcm.isCurrent(token) else { return }
@@ -119,6 +120,7 @@ final class MacinTalkProvider: @unchecked Sendable {
             // cancellation cannot block the audio-unit request callback or cache.
             engine.cancel()
         }
+        return token
     }
 
     func cancel() {
@@ -126,11 +128,12 @@ final class MacinTalkProvider: @unchecked Sendable {
         metricsLock.lock(); currentMetrics.token &+= 1; currentMetrics.complete = true; currentMetrics.error = "Cancelled"; metricsLock.unlock()
         markerLock.lock(); markerToken &+= 1; markers = []; markerLock.unlock()
     }
-    func read(into output: UnsafeMutablePointer<Float>, count: Int, wait: TimeInterval = 0.5) -> (frames: Int, complete: Bool) {
-        pcm.read(into: output, max: count, wait: wait)
+    func read(into output: UnsafeMutablePointer<Float>, count: Int, wait: TimeInterval = 0.5, token: UInt64? = nil) -> (frames: Int, complete: Bool) {
+        pcm.read(into: output, max: count, wait: wait, expectedToken: token)
     }
-    func takeMarkers() -> [(id: Int, frame: Int)] {
+    func takeMarkers(token: UInt64? = nil) -> [(id: Int, frame: Int)] {
         markerLock.lock(); defer { markerLock.unlock() }
+        if let token, token != markerToken { return [] }
         let out = markers; markers = []; return out
     }
 

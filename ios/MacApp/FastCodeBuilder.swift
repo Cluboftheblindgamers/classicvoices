@@ -54,8 +54,9 @@ enum FastCodeBuilder {
     }()
 
     /// Bumped when the compiler flags or the recompilers (RecompARM/RecompX86)
-    /// change what's built (f2: no SLP vectorizer, NewGVN).
-    static let flagsVersion = "f2"
+    /// change what's built (f2: no SLP vectorizer, NewGVN; f3: RecompX86 also
+    /// translates Tiger's __textcoal_nt and its SpeechDictionary).
+    static let flagsVersion = "f3"
 
     /// Compiles running now, stopped when the app quits (they would go on
     /// writing into a folder the next launch deletes).

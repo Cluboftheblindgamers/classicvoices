@@ -77,6 +77,13 @@ static void install_native(Vx *vx, const char *build) {
 #endif
 }
 
+// vx_open_prepared's hook: the fast code goes in before the engine's own
+// setup runs, which then runs on it too. On the interpreter that setup took
+// most of a voice's first utterance (measured on an M4 Pro: iOS 10 Ava 436 ->
+// 96 ms to first audio, iOS 6 Daniel Enhanced 76 -> 34, compacts ~40 -> ~23;
+// the audio is the same).
+static void prepare_native(Vx *vx, void *build) { install_native(vx, build); }
+
 #define OUT_RATE 22050
 
 typedef struct {
@@ -253,9 +260,7 @@ static Vx *open_engine(const char *root, const char *asset_root, const char *key
         snprintf(ldir, sizeof ldir, "%s/siri7/%s", asset_root, lang);
         snprintf(cdir, sizeof cdir, "%s/%s/TTSResources/common", root, eng);
         snprintf(g_open_ldir, sizeof g_open_ldir, "%s", ldir);
-        Vx *vx = vx_open(voiced, ldir, cdir, err, errlen);
-        if (vx) install_native(vx, eng);
-        return vx;
+        return vx_open_prepared(voiced, ldir, cdir, prepare_native, (void *)eng, err, errlen);
     }
     if (strncmp(build, "mac", 3) == 0) {
         char eng[16];
@@ -273,9 +278,7 @@ static Vx *open_engine(const char *root, const char *asset_root, const char *key
         else snprintf(ldir, sizeof ldir, "%s/%s/%s", asset_root, build, lang);
         snprintf(cdir, sizeof cdir, "%s/%s/common", root, build);
         snprintf(g_open_ldir, sizeof g_open_ldir, "%s", ldir);
-        Vx *vx = vx_open(voiced, ldir, cdir, err, errlen);
-        if (vx) install_native(vx, eng);
-        return vx;
+        return vx_open_prepared(voiced, ldir, cdir, prepare_native, eng, err, errlen);
     }
     size_t bl = strlen(build);
     int enhanced = bl >= 5 && build[bl - 1] == 'e';
@@ -300,9 +303,7 @@ static Vx *open_engine(const char *root, const char *asset_root, const char *key
     if (strcmp(build, "ios10") == 0 && access(cdir, R_OK) != 0)
         snprintf(cdir, sizeof cdir, "%s/mac109/common", root);
     snprintf(g_open_ldir, sizeof g_open_ldir, "%s", ldir);
-    Vx *vx = vx_open(voiced, ldir, cdir, err, errlen);
-    if (vx) install_native(vx, build);
-    return vx;
+    return vx_open_prepared(voiced, ldir, cdir, prepare_native, build, err, errlen);
 }
 
 // The engine for a voice key, opened if need be. `keep` names an engine that
@@ -1227,8 +1228,10 @@ static int speak_segmented(VxStream *s, Vx *vx, const char *primary_key, const c
     static const char kSpellOn[] = "\x1b\\tn=spell\\", kSpellOff[] = "\x1b\\tn=normal\\";
     static const char kSplice[] = "\x1b\\cvsp=", kLhpIn[] = "\x1b\\toi=lhp\\", kLhpOut[] = "\x1b\\toi=orth\\";
     static const char kPrefix[] = "\x1b\\cvpp=";
-    // a word's start as this voice says it (ESC\cvpp=), waiting for the phonemes it goes in front of
+    // a word's start as this voice says it (ESC\cvpp=), waiting for the phonemes it goes in front of. A copy: the
+    // splice ring it comes from may give its entry to the word's ending (spliced_suffix) before it is written.
     const char *pending_pre = NULL;
+    char pending_copy[512];  // spliced_prefix's results are shorter (they come from a 512-byte buffer)
     size_t pending_at = 0;
 #define PUT_PENDING_PREFIX(next) do { \
         if (pending_pre) { \
@@ -1332,6 +1335,35 @@ static int speak_segmented(VxStream *s, Vx *vx, const char *primary_key, const c
                 if (sticky[i][0]) SEG_PUT(sticky[i], strlen(sticky[i]), p - text);
             continue;
         }
+        // iOS 6 Enhanced treats each spelled letter as its own phrase even with
+        // spelling pauses disabled. Join short, standalone lowercase letter
+        // sequences using the active voice's own phonemes (e.g. braille feedback).
+        // Leave mixed text, commands, capitals, explicit breaks and pitch
+        // overrides to the ordinary spelling path.
+        static const char kJoinedSpell[] = "\x1b\\spell=0\\\x1b\\tn=spell\\";
+        if (p == text && pitch == 50 && !strncmp(primary_key, "ios6e/", 6) &&
+            !atomic_load(&s->spelling_pauses) && !strncmp(p, kJoinedSpell, sizeof kJoinedSpell - 1)) {
+            const char *letters = p + sizeof kJoinedSpell - 1;
+            size_t count = strspn(letters, "abcdefghijklmnopqrstuvwxyz");
+            if (count >= 2 && count <= 4 && !letters[count]) {
+                const char *phonemes[4] = {0};
+                size_t i = 0;
+                for (; i < count && !atomic_load(&s->cancel); i++) {
+                    phonemes[i] = spelled_lhp(s, vx, letters + i, 1);
+                    if (!phonemes[i]) break;
+                }
+                if (i == count) {
+                    SEG_PUT(kLhpIn, sizeof kLhpIn - 1, letters - text);
+                    for (i = 0; i < count; i++) {
+                        if (i) SEG_PUT(".", 1, letters + i - text);
+                        SEG_PUT(phonemes[i], strlen(phonemes[i]), letters + i - text);
+                    }
+                    SEG_PUT(kLhpOut, sizeof kLhpOut - 1, letters + count - text);
+                    p = letters + count;
+                    continue;
+                }
+            }
+        }
         if (inline_spell && !strncmp(p, kSpellOn, sizeof kSpellOn - 1)) {
             const char *c = p + sizeof kSpellOn - 1;
             while (*c == ' ') c++;
@@ -1363,8 +1395,11 @@ static int speak_segmented(VxStream *s, Vx *vx, const char *primary_key, const c
             const char *pre = starts &&
                 (!strncmp(p, kLhpIn, sizeof kLhpIn - 1) || !strncmp(p, kSplice, sizeof kSplice - 1))
                 ? spliced_prefix(s, vx, word, pl) : NULL;
-            if (pre) { pending_pre = pre; pending_at = (size_t)(at - text); }
-            else SEG_PUT(letters, pl, at - text);
+            if (pre) {
+                snprintf(pending_copy, sizeof pending_copy, "%s", pre);
+                pending_pre = pending_copy;
+                pending_at = (size_t)(at - text);
+            } else SEG_PUT(letters, pl, at - text);
             continue;
         }
         if (pending_pre && !strncmp(p, kLhpIn, sizeof kLhpIn - 1)) {
@@ -1712,7 +1747,8 @@ static void *worker(void *arg) {
                 mte_set_voice_options(mt, mt_wpm, mt_inflection, mt_abbreviations, mt_volume_milli, mt_pitch_tenths);
                 mte_set_mark_callback(mt, mt_mark);
                 if (mte_speak(mt, voice, text, rate, pitch, volume, mt_pcm, &k) < 0 && !atomic_load(&s->cancel)) {
-                    snprintf(s->err, sizeof s->err, "%s", mte_error(mt));
+                    const char *error = mte_error(mt);
+                    snprintf(s->err, sizeof s->err, "%s", *error ? error : "MacinTalk synthesis failed");
                     os_log_error(OS_LOG_DEFAULT, "CLASSICVOICES MacinTalk speak failed: %{public}s", s->err);
                 }
                 // It shut itself down after a fault or a hang: the next

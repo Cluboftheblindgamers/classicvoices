@@ -291,7 +291,14 @@ For an IPA you plan to install with Sideloadly, also pass
 `--legacy-engine-resources`. This stores the legacy Vocalizer and MacinTalk
 engine images as data so the installer signs the app and speech extension
 without trying to sign the guest engines. Keep the Synth extension enabled
-when sideloading to make the voices available to VoiceOver.
+when sideloading to make the voices available to VoiceOver. The standard GitHub IPA build
+(`tools/package_ipa.sh`) now also wraps legacy engine images as resources.
+The private Panthera packager retains its separate test identity. Its default
+version and build number come from `ios/project.yml`; bump both the build
+number and the audio unit version in `ios/Synth/Info.plist` when publishing
+an update. Regenerate the fast-code tables from the exact engines being
+packaged after any profile changes. The source regression workflow runs
+without downloaded voices; real-engine and device tests remain separate.
 
 ## Windows, Android and Linux
 

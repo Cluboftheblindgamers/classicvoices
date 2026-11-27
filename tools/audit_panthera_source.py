@@ -16,9 +16,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source',type=Path,required=True)
+    parser.add_argument('--source',type=Path,required=True,
+                        help='a Panthera Speech checkout (the maintained Apple sources in apple/Shared)')
     parser.add_argument('--output',type=Path)
     args=parser.parse_args()
+    if not (args.source/'apple/Shared').is_dir():
+        parser.error('--source must be a Panthera Speech checkout containing apple/Shared; '
+                     'this Classic Voices tree is the port being compared, not the source')
     report={'source':'Maintained Panthera Apple snapshot','files':{},'settings':{}}
     for name in ['SpeechText.swift','MacRoman.swift','Pronunciations.swift','SSMLRequest.swift','PantheraSettings.swift','Generation.swift']:
         old=(args.source/'apple/Shared'/name).read_text()

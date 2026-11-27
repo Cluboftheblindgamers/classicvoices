@@ -1130,6 +1130,13 @@ struct SpeechSettingsView: View {
                 Text("Enhanced and premium voices can\u{2019}t change pitch. As VoiceOver did on iOS 5 and 6, anything spoken at a changed pitch (capital letters, the pitch rotor) uses the voice\u{2019}s compact version, which stays loaded. Voices without a compact version here are unaffected.")
             }
             Section {
+                Toggle("Vocalizer rate boost", isOn: Binding(
+                    get: { library.settings.vocalizerRateBoost },
+                    set: { v in library.updateSettings { $0.vocalizerRateBoost = v } }))
+            } footer: {
+                Text("Increases Vocalizer speaking rates above normal, reaching the engine’s maximum at 250% instead of 400%. Normal and slower rates stay the same.")
+            }
+            Section {
                 Toggle("Pauses keep their length at any rate", isOn: Binding(
                     get: { library.settings.steadyPauses },
                     set: { v in library.updateSettings { $0.steadyPauses = v } }))

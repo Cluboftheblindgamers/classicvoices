@@ -31,6 +31,9 @@ import struct
 # ---------------------------------------------------------------- the dump
 
 
+CODE_SECTIONS = ("__text", "__textcoal_nt")
+
+
 class Dump:
     def __init__(self, d):
         self.images, self.sects, self.syms = [], [], []
@@ -48,7 +51,9 @@ class Dump:
                                    "size": int(f[5], 16), "flags": int(f[6], 16)})
             elif f[0] == "sym":
                 self.syms.append((f[1], int(f[2], 16), " ".join(f[3:])))
-        self.texts = [s for s in self.sects if s["sect"] == "__text" and s["seg"] == "__TEXT"]
+        # code: __text, and Tiger's __textcoal_nt (C++ inline functions its
+        # synthesizer calls millions of times a sentence)
+        self.texts = [s for s in self.sects if s["sect"] in CODE_SECTIONS and s["seg"] == "__TEXT"]
 
     def image(self, name):
         return next(i for i in self.images if i["name"] == name)
@@ -484,7 +489,9 @@ def main():
             im = dump.image(ln[0])
         except StopIteration:
             continue
-        addr = int(ln[1], 16) + im["slide"]
+        # 32-bit, as the loader slid it: Tiger's SpeechDictionary is prebound
+        # at 0x96d0c000 and loaded far below, so its slide wraps around
+        addr = (int(ln[1], 16) + im["slide"]) & 0xFFFFFFFF
         if dump.text_of(addr):
             starts[addr] = starts.get(addr, 0) + (int(ln[2]) if len(ln) == 3 else 1)
 

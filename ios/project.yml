@@ -107,8 +107,8 @@ targetTemplates:
         # all of it: the recompiled MacinTalk registers itself from a
         # constructor nothing refers to
         OTHER_LDFLAGS: ["$(inherited)", "-Wl,-force_load,$(BUILT_PRODUCTS_DIR)/libEngineCode.a", "-lc++"]
-        MARKETING_VERSION: "0.5.3"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "0.5.4"
+        CURRENT_PROJECT_VERSION: "32"
   App:
     templates: [Engine]
     type: application

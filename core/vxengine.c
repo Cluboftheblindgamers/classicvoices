@@ -100,6 +100,9 @@ struct Vx {
     uint32_t map_next, map_hi;
     size_t mem_size;        // what vx_open reserved for mem: GUEST_MEM_SIZE, or less in a crowded 32-bit program
     uint32_t native_limit;  // fast code built for a smaller guest space: none past this (0: no limit)
+    int opening;
+    const NativeEntry *deferred_native;
+    size_t deferred_native_count;
     Mapping maps[MAX_MAPS];
 
     // pthread TLS / keys
@@ -1460,9 +1463,12 @@ static int xml_tag(const char *xml, const char *tag, char *out, size_t cap) {
     }
 #define UNGUARD(vx) ((vx)->cpu.fault_jmp = prev_jmp)
 
-static int vx_start(Vx *vx, const char *voiced_path, const char *lang_dir, const char *common_dir) {
+static int vx_start(Vx *vx, const char *voiced_path, const char *lang_dir, const char *common_dir,
+                    void (*prepare)(Vx *, void *), void *prepare_ctx) {
     GUARD(vx);
     if (load_macho(vx, voiced_path)) { UNGUARD(vx); return -1; }
+    // the engine's code is in place and none of it has run (vx_open_prepared)
+    if (prepare) prepare(vx, prepare_ctx);
 
     // Built-in voices ship `broker.hdr` ("defaultvoice:<Name>\n" + XML);
     // downloaded (MobileAsset) voices ship `broker.hdr.asset` (XML only).
@@ -1574,6 +1580,11 @@ static int vx_start(Vx *vx, const char *voiced_path, const char *lang_dir, const
 }
 
 Vx *vx_open(const char *voiced_path, const char *lang_dir, const char *common_dir, char *err, size_t errlen) {
+    return vx_open_prepared(voiced_path, lang_dir, common_dir, NULL, NULL, err, errlen);
+}
+
+Vx *vx_open_prepared(const char *voiced_path, const char *lang_dir, const char *common_dir,
+                     void (*prepare)(Vx *vx, void *ctx), void *ctx, char *err, size_t errlen) {
     Vx *vx = calloc(1, sizeof *vx);
     // The whole guest space in one piece, reserved rather than used (pages
     // come as they're touched; on Windows mostly file views, vx_win.c). A
@@ -1618,11 +1629,19 @@ Vx *vx_open(const char *voiced_path, const char *lang_dir, const char *common_di
     vx->map_next = MAP_LO;
     vx->data_sym_next = DATA_SYMS;
     vx->errno_addr = data_sym(vx, "errno");
-    if (vx_start(vx, voiced_path, lang_dir, common_dir)) {
+    vx->opening = 1;
+    if (vx_start(vx, voiced_path, lang_dir, common_dir, prepare, ctx)) {
         if (err) snprintf(err, errlen, "%s", vx->err);
         vx_close(vx);
         return NULL;
     }
+    vx->opening = 0;
+    // Legacy dynamic libraries with smaller address spaces can only attach
+    // after all initial voice mappings are known.
+    if (vx->deferred_native && vx->map_next <= vx->native_limit)
+        vx_set_native(vx, vx->deferred_native, vx->deferred_native_count);
+    vx->deferred_native = NULL;
+    vx->deferred_native_count = 0;
     return vx;
 }
 
@@ -1743,6 +1762,12 @@ void vx_set_native(Vx *vx, const void *entries, size_t n) {
 int vx_has_native(Vx *vx) { return vx->cpu.nnative > 0; }
 void vx_set_native_limit(Vx *vx, uint32_t limit) {
     vx->native_limit = limit;
-    if (limit && vx->map_next > limit) vx_set_native(vx, NULL, 0);
+    if (limit && vx->opening && limit < vx->map_hi) {
+        vx->deferred_native = vx->cpu.native;
+        vx->deferred_native_count = vx->cpu.nnative;
+        vx_set_native(vx, NULL, 0);
+    } else if (limit && vx->map_next > limit) {
+        vx_set_native(vx, NULL, 0);
+    }
 }
 const char *vx_last_error(Vx *vx) { return vx->err; }

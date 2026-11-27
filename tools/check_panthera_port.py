@@ -40,6 +40,8 @@ def main():
     with (build/'module-build.log').open('w') as log:run(module,stdout=log,stderr=subprocess.STDOUT)
     checks=['panthera_maintenance','panthera_port','panthera_queue','panthera_scopes','panthera_storage','lion_pronunciations','announcement_pauses','ios10_vocalizer']
     if args.voice_root:checks += ['panthera_provider','lion_navigation']
+    if args.voice_root and all((args.voice_root/era/'en-GB/broker.hdr.asset').exists() for era in ('ios6','ios70')):
+        checks.append('ios6_spelling')
     if args.voice_root and (args.voice_root/'mt107/Voices/Alex-sequoia.SpeechVoice').exists():
         checks.append('sequoia_inflection')
     if args.stress and args.voice_root:checks.append('panthera_stress')
@@ -60,7 +62,42 @@ def main():
                     run([build/name, '--'+generation], env=env, stdout=log, stderr=subprocess.STDOUT, timeout=90)
                 print(log_path.read_text().strip(), flush=True)
 
+    # The speech extension's audio unit itself: several units in one process
+    # sharing the Vocalizer stream, as the system can hold them. Built as a
+    # module of its own (Shared plus Synth's audio unit; a stub replaces the
+    # file channel, which needs an .appex container). Needs iOS 6 compacts.
+    if args.voice_root and (args.voice_root/'ios6/voiced').exists():
+        unit=common+['-DCV_PUBLIC','-DCV_PORT_TEST','-enable-testing','-emit-library','-emit-module',
+            '-module-name','ClassicUnitTest','-emit-module-path',build/'ClassicUnitTest.swiftmodule']+sources+[
+            ROOT/'ios/Synth/ClassicVoicesAudioUnit.swift',ROOT/'tests/support/FileChannelStub.swift',archive]+native+[
+            '-lc++','-lz','-lbz2','-lsqlite3','-licucore','-framework','AudioToolbox','-framework','Accelerate',
+            '-framework','NaturalLanguage','-Xlinker','-install_name','-Xlinker','@rpath/libClassicUnitTest.dylib',
+            '-o',build/'libClassicUnitTest.dylib']
+        with (build/'unit-module-build.log').open('w') as log:run(unit,stdout=log,stderr=subprocess.STDOUT)
+        name='vocalizer_units'
+        command=common+['-parse-as-library','-I',build,ROOT/'tests'/(name+'.swift'),'-L',build,
+            '-lClassicUnitTest','-Xlinker','-rpath','-Xlinker','@executable_path','-o',build/name]
+        with (build/(name+'-build.log')).open('w') as log:run(command,stdout=log,stderr=subprocess.STDOUT)
+        env=dict(os.environ,CV_PORT_TEST_OUTPUT=str(build),CV_PORT_ROOT=str(args.voice_root.resolve()))
+        if args.native_libraries:env['CV_PORT_NATIVE_DIR']=str(args.native_libraries.resolve())
+        # -lastVoiceKey: the unit's remembered voice comes from the argument
+        # domain, so the test leaves no preferences file behind.
+        with (build/(name+'.log')).open('w') as log:
+            run([build/name,'-lastVoiceKey','ios6/en-GB'],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=120)
+        print((build/(name+'.log')).read_text().strip(),flush=True)
+
     run(['clang','-O2','-Icore','-Icore/mt','tests/mt_port_render.c','-L',build,
          '-lClassicPortTest','-Wl,-rpath,@executable_path','-o',build/'mt_port_render'])
+
+    # Vocalizer engines take their fast code before their own setup runs
+    # (vx_open_prepared): needs the iOS 6 compacts and the Mac fast code.
+    if args.voice_root and args.native_libraries and (args.voice_root/'ios6/voiced').exists():
+        name='vx_open_native'
+        run(['clang','-O2','-Icore','tests/'+name+'.c','-L',build,'-lClassicPortTest',
+             '-Wl,-rpath,@executable_path','-o',build/name])
+        env=dict(os.environ,CV_PORT_ROOT=str(args.voice_root.resolve()),
+                 CV_PORT_NATIVE_DIR=str(args.native_libraries.resolve()))
+        with (build/(name+'.log')).open('w') as log:run([build/name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=90)
+        print((build/(name+'.log')).read_text().strip(),flush=True)
 
 if __name__=='__main__':main()

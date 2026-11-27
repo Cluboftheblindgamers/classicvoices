@@ -51,6 +51,48 @@ import Foundation
         settings.macinTalk["snowleopard"]!.inflection = 80
         _ = ops.perform(["op": "write", "path": SpeechSettings.file, "data": settings.encoded()])
         precondition(SpeechSettings.current.macinTalkSettings(.snowleopard).inflection == 80, "target replacement behind unchanged group symlink must reload")
-        print("PASS MT-only discovery, nested install/removal refresh, atomic settings, same-date replacement, corrupt-file recovery and legacy group links")
+
+        // Installing over an installed voice: discard, put, commit (VoiceStore.install).
+        func put(_ rel: String, _ text: String) -> Bool {
+            ops.perform(["op": "put", "path": rel, "data": Data(text.utf8), "offset": NSNumber(value: 0)])["ok"] as? Bool == true
+        }
+        func installed(_ rel: String) -> String? {
+            (try? Data(contentsOf: root.appendingPathComponent(rel))).map { String(decoding: $0, as: UTF8.self) }
+        }
+        func leftovers() -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: root.path)) ?? []).filter { $0.hasPrefix(".staging-replaced-") }
+        }
+        let voiceDir = "ios6/en-GB"
+        _ = ops.perform(["op": "discard"])
+        precondition(put(voiceDir + "/broker.hdr.asset", "old voice"))
+        precondition(ops.perform(["op": "commit", "path": voiceDir])["ok"] as? Bool == true)
+        precondition(installed(voiceDir + "/broker.hdr.asset") == "old voice")
+        // Nothing staged (another install's discard came in between, or an
+        // empty folder was sent): the installed voice must survive.
+        _ = ops.perform(["op": "discard"])
+        let empty = ops.perform(["op": "commit", "path": voiceDir])
+        precondition(empty["error"] != nil, "a commit with nothing staged must report an error")
+        precondition(installed(voiceDir + "/broker.hdr.asset") == "old voice", "a commit with nothing staged must keep the installed voice")
+        // An ordinary replacement swaps the whole folder and leaves nothing aside.
+        precondition(put(voiceDir + "/broker.hdr.asset", "new voice"))
+        precondition(ops.perform(["op": "commit", "path": voiceDir])["ok"] as? Bool == true)
+        precondition(installed(voiceDir + "/broker.hdr.asset") == "new voice", "commit must install the new copy")
+        precondition(leftovers().isEmpty, "a successful replacement leaves no set-aside copy")
+        // A store link into the App Group (adoptLegacy): replacing it still
+        // removes the group's copy, as before, once the new one is in place.
+        let group = root.appendingPathComponent("group-voices/ios5-en-GB")
+        try fm.createDirectory(at: group, withIntermediateDirectories: true)
+        try Data("group voice".utf8).write(to: group.appendingPathComponent("broker.hdr.asset"))
+        try fm.createDirectory(at: root.appendingPathComponent("ios5"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: root.appendingPathComponent("ios5/en-GB"), withDestinationURL: group)
+        _ = ops.perform(["op": "discard"])
+        precondition(put("ios5/en-GB/broker.hdr.asset", "store voice"))
+        precondition(ops.perform(["op": "commit", "path": "ios5/en-GB"])["ok"] as? Bool == true)
+        precondition(installed("ios5/en-GB/broker.hdr.asset") == "store voice")
+        precondition((try? fm.destinationOfSymbolicLink(atPath: root.appendingPathComponent("ios5/en-GB").path)) == nil,
+                     "the link is replaced by the store's own copy")
+        precondition(!fm.fileExists(atPath: group.path), "the replaced link's App Group copy is removed after the new copy is in place")
+        precondition(leftovers().isEmpty)
+        print("PASS MT-only discovery, nested install/removal refresh, atomic settings, same-date replacement, corrupt-file recovery, legacy group links and installs that keep the installed voice when nothing arrives")
     }
 }
